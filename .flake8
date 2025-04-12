@@ -1,0 +1,5 @@
+[flake8]
+max-line-length = 88
+ignore =
+    E203,  # spacing before colon (in conflict with black)
+    W503   # line break before binary operator

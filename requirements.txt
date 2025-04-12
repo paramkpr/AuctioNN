@@ -1,0 +1,16 @@
+numpy
+pandas
+scikit-learn
+
+# DL frameworks
+torch
+
+# Web
+# fastapi==0.95.0
+# uvicorn==0.21.1
+
+# CLI
+click
+
+# Testing
+# pytest==7.3.1
