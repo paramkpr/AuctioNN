@@ -15,3 +15,6 @@ __pycache__/
 *.aux
 *.log
 *.out
+
+# Notebooks
+.ipynb_checkpoints/
