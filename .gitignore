@@ -1,1 +1,17 @@
+# Virtual environment
 .venv/
+venv/
+__pycache__/
+
+# Python cache
+*.pyc
+*.pyo
+*.pyd
+
+# Environment variables
+.env
+
+# LaTeX
+*.aux
+*.log
+*.out

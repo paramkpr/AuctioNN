@@ -1,0 +1,14 @@
+Column Name,Data Type,Description
+dte,date,Date
+conv_dttm_utc,timestamp,Timestamp in UTC indicating when the event occurred
+imp_click_dttm_utc,timestamp,Timestamp in UTC indicating when attributed impression occurred
+imp_click_campaign_id,int,Unique identifier for the campaign
+imp_click_placement_id,int,Identifier for the ad placement within a campaign
+conv_property_id,int,Identifier for the property (pixel)
+conv_dma,int,DMA code
+conv_user_agent,string,User agent
+goal_id,int,Identifier for the goal (event type)
+goal_name,string,Name of the goal (event type)
+conv_prizm_premier_code,int,Prizm Premier Code
+conv_cnxn_type,string,"Type of internet connection used (e.g., Cable/DSL, Cellular)"
+conv_device_type,string,Type of device
