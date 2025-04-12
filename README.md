@@ -8,7 +8,7 @@ We use a real-world ad impression dataset (provided by [Claritas](https://www.cl
 
 ## Directory Structure
 The following is a typical directory structure for the AuctioNN project:
-
+```
 ├── docs                      - LaTeX setup for the project write up
 │   └── README.md
 ├── main.py                   - Main CLI entry point for the project
@@ -31,7 +31,7 @@ The following is a typical directory structure for the AuctioNN project:
 │   └── README.md
 ├── .gitignore
 └── README.md
-
+```
 ## Getting Started
 
 1. Clone the repository:
@@ -52,6 +52,14 @@ pip install -e .
 python main.py
 python main.py --help # to see the available options
 ```
+
+3. **IMPORTANT** If you want to run the code in the notebooks, you jupyter kernel needs to use this virtual environment so that it's the same for all users.
+You need to install the kernel in the venv by running the following command:
+```bash
+python -m ipykernel install --user --name auctionn --display-name "Python (auctionn)"
+```
+Now when you run `jupyter notebook`, you should see the kernel (or the option to select the kernel) as `Python (auctionn)`.
+If you're using VSCode, you can select the kernel by going to the `Python: Select Interpreter` option in the command palette.
 
 ## Contributing
 Before making any changes, please create a new branch:
