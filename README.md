@@ -86,3 +86,23 @@ Create a pull request on GitHub. Of course, you can self-review your changes. Ho
 2. **Type hints**: Please use type hints for all functions and classes. (e.g. `def function_name(param1: int, param2: str) -> bool:`)
 3. **Code readability**: Please follow the [PEP 8](https://pep8.org/) style guide for Python code.
 4. **Comments**: Please add comments to the code to explain "why" behind the code in more complex functions.
+
+
+## Getting the dataset from Claritas
+You'll need to set up AWS CLI on your machine and create a profile with access to the Claritas bucket. Credentials are stored in the repository secrets. 
+
+1. Install AWS CLI:
+```bash
+brew install awscli
+```
+
+2. Create a profile:
+```bash
+aws configure
+```
+3. Commmands you'll want:
+```bash
+aws --profile auctionn s3 ls s3://calpoly-artsai --human-readable --summarize --recursive
+aws --profile auctionn s3 ls s3://calpoly-artsai/prediction_allocation_logic/ --human-readable --summarize --recursive
+aws --profile auctionn s3 cp s3://calpoly-artsai/prediction_allocation_logic/ ./data --recursive
+```
