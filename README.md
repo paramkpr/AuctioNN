@@ -5,6 +5,50 @@ AuctioNN is a mechanism-design project that explores how **neural networks** can
 We use a real-world ad impression dataset (provided by [Claritas](https://www.claritas.com/)) with features such as device information, geolocation data, time since last impression, and conversion outcomes. By learning complex relationships in this data, our model aims to deliver *better* allocation decisions compared to traditional rule-based systems.
 
 ---
+## Usage
+AuctioNN provides a command line interface for data wrangling, model training, and allocation simulation. You can view the available commands by running:
+```bash
+python main.py --help
+```
+
+### Preprocessing
+The `preprocess` command cleans and preprocesses the raw dataset and saves the cleaned data to a parquet file.
+```bash
+python main.py preprocess --impressions-file data/raw/impressions.parquet \
+    --conversions-file data/raw/conversions.parquet \
+    --output-file data/processed/clean_data.parquet
+```
+
+### Fitting Preprocessors
+The `fit-preprocessors` command fits the preprocessors (encoders, scalers) on the training split of the cleaned data and saves them to a directory.
+```bash
+python main.py fit-preprocessors --cleaned-data-file data/processed/clean_data.parquet \
+    --output-dir ./preprocessors
+```
+
+### Training (WIP)
+The `train` command trains the neural network model on the cleaned data using the preprocessors.
+```bash
+python main.py train --data-path data/processed/clean_data.parquet \
+    --preprocessor-dir ./preprocessors
+```
+
+### Allocating (WIP)
+The `allocate` command runs the allocation mechanism using the trained model.
+```bash
+python main.py allocate --model-path ./models/neural_net.pth \
+    --data-path data/processed/clean_data.parquet \
+    --output-dir ./allocations
+```
+
+### Evaluating (WIP)
+The `evaluate` command evaluates the performance of the allocation mechanism.
+```bash
+python main.py evaluate --data-path data/processed/clean_data.parquet \
+    --output-dir ./evaluations
+```
+
+---
 
 ## Directory Structure
 The following is a typical directory structure for the AuctioNN project:
