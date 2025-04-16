@@ -9,13 +9,48 @@ The functions are:
 
 import pandas as pd
 from user_agents import parse
+from tqdm import tqdm
+import multiprocessing
+import numpy as np
+import math # Import math for ceiling division
+
+tqdm.pandas()
+
+
+def parse_ua_chunk(ua_series_chunk):
+    """Parses a chunk of user agent strings and returns a DataFrame."""
+    features = []
+    default_features = {
+        'ua_browser': 'Unknown', 'ua_os': 'Unknown', 'ua_device_family': 'Unknown',
+        'ua_device_brand': 'Unknown', 'ua_is_mobile': False, 'ua_is_tablet': False,
+        'ua_is_pc': False, 'ua_is_bot': False
+    }
+    for ua_str in ua_series_chunk:
+        if ua_str and isinstance(ua_str, str): # Check if ua_str is a non-empty string
+            try:
+                ua = parse(ua_str)
+                features.append({
+                    'ua_browser': ua.browser.family if ua.browser.family else 'Unknown',
+                    'ua_os': ua.os.family if ua.os.family else 'Unknown',
+                    'ua_device_family': ua.device.family if ua.device.family else 'Unknown',
+                    'ua_device_brand': ua.device.brand if ua.device.brand else 'Unknown',
+                    'ua_is_mobile': ua.is_mobile,
+                    'ua_is_tablet': ua.is_tablet,
+                    'ua_is_pc': ua.is_pc,
+                    'ua_is_bot': ua.is_bot,
+                })
+            except Exception: # Catch potential parsing errors for specific UAs
+                 features.append(default_features.copy())
+        else:
+            features.append(default_features.copy())
+    # Create DataFrame with original index from the chunk to preserve alignment
+    return pd.DataFrame(features, index=ua_series_chunk.index)
+
 
 def clean_and_merge_data(impressions_path: str, conversions_path: str) -> pd.DataFrame:
     """
     Loads impression and conversion data from Claritas, merges them, cleans the data,
-    and performs feature engineering.
-    Note: This function takes a while to run since the User Agent parsing is slow for
-     large datasets.
+    and performs feature engineering. User agent parsing is parallelized.
 
     Args:
         impressions_path: Path to the impressions parquet dataset directory.
@@ -28,11 +63,15 @@ def clean_and_merge_data(impressions_path: str, conversions_path: str) -> pd.Dat
     df_impressions = pd.read_parquet(impressions_path)
     df_conversions = pd.read_parquet(conversions_path)
 
+    print(f"Loaded datasets: <Impressions: {df_impressions.shape}>, <Conversions: {df_conversions.shape}>")
+
     # Drop AIP columns if they exist since they are mostly empty
     aip_imp_cols = [col for col in df_impressions.columns if col.startswith('aip')]
     aip_conv_cols = [col for col in df_conversions.columns if col.startswith('aip')]
     df_impressions = df_impressions.drop(columns=aip_imp_cols)
     df_conversions = df_conversions.drop(columns=aip_conv_cols)
+
+    print(f"Dropped AIP columns: <Impressions: {df_impressions.shape}>, <Conversions: {df_conversions.shape}>")
 
     # --- Linking using Unique IDs ---
     # Select necessary columns from conversions for the merge
@@ -47,9 +86,13 @@ def clean_and_merge_data(impressions_path: str, conversions_path: str) -> pd.Dat
         how='left'
     )
 
+    print(f"Merged dataset: <Merged: {df_merged.shape}>")
+
     # --- Data Cleaning and Feature Engineering ---
     # Create conversion flag
     df_merged['conversion_flag'] = (~df_merged['conv_dttm_utc'].isnull()).astype(int)
+
+    print(f"Created conversion flag: <Merged: {df_merged.shape}>")
 
     # Drop redundant join key
     columns_to_drop = ['imp_click_unique_id']
@@ -65,29 +108,73 @@ def clean_and_merge_data(impressions_path: str, conversions_path: str) -> pd.Dat
         if col in df_merged.columns: # Check if column exists
              df_merged[col] = df_merged[col].fillna('Unknown')
 
-    # Parse user agent strings
-    ua_features = df_merged['user_agent'].apply(lambda ua_str: pd.Series({
-        'ua_browser': parse(ua_str).browser.family if ua_str else 'Unknown',
-        'ua_os': parse(ua_str).os.family if ua_str else 'Unknown',
-        'ua_device_family': parse(ua_str).device.family if ua_str else 'Unknown',
-        'ua_device_brand': parse(ua_str).device.brand if ua_str else 'Unknown',
-        'ua_is_mobile': parse(ua_str).is_mobile if ua_str else False, # Default bool to False
-        'ua_is_tablet': parse(ua_str).is_tablet if ua_str else False,
-        'ua_is_pc': parse(ua_str).is_pc if ua_str else False,
-        'ua_is_bot': parse(ua_str).is_bot if ua_str else False,
-    }))
-    df_merged = pd.concat([df_merged, ua_features], axis=1)
+    print(f"Filled missing values: <Merged: {df_merged.shape}>")
 
-    columns_to_drop_after_ua = ['user_agent']
-    columns_to_drop_exists = [col for col in columns_to_drop_after_ua if col in df_merged.columns]
-    df_merged = df_merged.drop(columns=columns_to_drop_exists)
+    # --- Multiprocessing User Agent Parsing ---
+    if 'user_agent' in df_merged.columns and not df_merged['user_agent'].isnull().all():
+        ua_series = df_merged['user_agent'].fillna('') # Fill NaNs before processing
+        num_processes = multiprocessing.cpu_count()
+        # Adjust chunk size for potentially better load balancing with many small tasks
+        # Aim for more chunks than processes if parsing is very fast per item
+        chunk_size = max(1, math.ceil(len(ua_series) / (num_processes * 4))) # Example: 4 chunks per process
+        num_chunks = math.ceil(len(ua_series) / chunk_size)
 
+        print(f"Starting User Agent parsing using {num_processes} processes ({num_chunks} chunks)...")
+
+        # Create chunks manually to preserve index within chunks
+        chunks = [ua_series[i:i + chunk_size] for i in range(0, len(ua_series), chunk_size)]
+
+        ua_features_list = []
+        try:
+            # Use multiprocessing Pool with tqdm for progress
+            with multiprocessing.Pool(processes=num_processes) as pool:
+                 # Use imap_unordered for potential slight speedup if order doesn't matter for progress
+                 # Wrap with tqdm to show progress based on completed chunks
+                 ua_features_list = list(tqdm(pool.imap_unordered(parse_ua_chunk, chunks), total=num_chunks, desc="Parsing User Agents"))
+
+            # Concatenate results
+            if ua_features_list:
+                 ua_features = pd.concat(ua_features_list)
+                 # Ensure the index of ua_features matches df_merged's index
+                 ua_features = ua_features.reindex(df_merged.index)
+            else:
+                 # Handle cases where no features were generated (e.g., all input was invalid)
+                  ua_features = pd.DataFrame(index=df_merged.index, columns=[ # Define expected columns
+                     'ua_browser', 'ua_os', 'ua_device_family', 'ua_device_brand',
+                     'ua_is_mobile', 'ua_is_tablet', 'ua_is_pc', 'ua_is_bot'
+                 ]).fillna('Unknown') # Fill with defaults
+                  # Ensure boolean columns are boolean
+                  bool_cols = ['ua_is_mobile', 'ua_is_tablet', 'ua_is_pc', 'ua_is_bot']
+                  ua_features[bool_cols] = ua_features[bool_cols].fillna(False).astype(bool)
+
+
+        except Exception as e:
+            print(f"Error during parallel user agent parsing: {e}")
+            # Fallback or define empty features df? For now, let's create an empty one.
+            ua_features = pd.DataFrame(index=df_merged.index, columns=[ # Define expected columns
+                 'ua_browser', 'ua_os', 'ua_device_family', 'ua_device_brand',
+                 'ua_is_mobile', 'ua_is_tablet', 'ua_is_pc', 'ua_is_bot'
+             ]).fillna('Unknown')
+            bool_cols = ['ua_is_mobile', 'ua_is_tablet', 'ua_is_pc', 'ua_is_bot']
+            ua_features[bool_cols] = ua_features[bool_cols].fillna(False).astype(bool)
+
+
+        df_merged = pd.concat([df_merged, ua_features], axis=1)
+        print(f"Parsed user agent strings: <Merged: {df_merged.shape}>")
+
+        columns_to_drop_after_ua = ['user_agent']
+        columns_to_drop_exists = [col for col in columns_to_drop_after_ua if col in df_merged.columns]
+        df_merged = df_merged.drop(columns=columns_to_drop_exists)
+    else:
+         print("Skipping User Agent parsing as 'user_agent' column is missing or empty.")
 
 
     # Add temporal features
     df_merged['impression_dttm_utc'] = pd.to_datetime(df_merged['impression_dttm_utc'])
     df_merged['impression_hour'] = df_merged['impression_dttm_utc'].dt.hour
     df_merged['impression_dayofweek'] = df_merged['impression_dttm_utc'].dt.dayofweek # Monday=0, Sunday=6
+
+    print(f"Added temporal features: <Merged: {df_merged.shape}>")
 
     # Ensure correct data types for potentially problematic columns after merge/fillna
     bool_cols = ['ua_is_mobile', 'ua_is_tablet', 'ua_is_pc', 'ua_is_bot']
@@ -100,7 +187,9 @@ def clean_and_merge_data(impressions_path: str, conversions_path: str) -> pd.Dat
          if col in df_merged.columns:
              df_merged[col] = df_merged[col].astype('int32') # More efficient than int64
 
-    print(f"Data cleaning and merging complete. Final shape: {df_merged.shape}")
+    print(f"Ensured correct data types: <Merged: {df_merged.shape}>")
+
+    print(f"Data cleaning and merging complete. Final shape: <Merged: {df_merged.shape}>")
     return df_merged
 
 

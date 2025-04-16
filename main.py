@@ -23,6 +23,7 @@ Example:
 
 import click
 
+from src.data_processing.preprocess import clean_and_merge_data, save_dataframe_to_parquet
 
 @click.group()
 def cli():
@@ -34,10 +35,16 @@ def cli():
 
 @cli.command()
 @click.option(
-    "--input-file",
+    "--impressions-file",
     "-i",
     default="data/raw/impressions.csv",
     help="Path to raw data file",
+)
+@click.option(
+    "--conversions-file",
+    "-c",
+    default="data/raw/conversions.csv",
+    help="Path to conversions data file",
 )
 @click.option(
     "--output-file",
@@ -45,15 +52,13 @@ def cli():
     default="data/processed/impressions_clean.csv",
     help="Path to save cleaned data",
 )
-def preprocess(input_file, output_file):
+def preprocess(impressions_file, conversions_file, output_file):
     """
     Clean and preprocess the raw dataset for model training.
     """
-    click.echo(f"Preprocessing data from {input_file} ...")
-    # TODO: call preprocessing logic here, e.g.:
-    # from src.data_processing import preprocess
-    # preprocess.clean(input_file, output_file)
-
+    click.echo(f"Preprocessing data from {impressions_file} and {conversions_file} ...")
+    df_merged = clean_and_merge_data(impressions_path=impressions_file, conversions_path=conversions_file)
+    save_dataframe_to_parquet(df_merged, output_file)       
     click.echo(f"Processed data saved to {output_file}.")
 
 

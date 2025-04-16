@@ -46,7 +46,7 @@ class AuctionDataset(Dataset):
 
         print(f"Dataset initialized. Number of samples: {len(self.target)}")
         print(f"Number of features: {len(self.feature_names)}")
-        # print(f"Feature names: {self.feature_names}") # Uncomment to see features
+        print(f"Feature names: {self.feature_names}")
 
     def __len__(self):
         """Returns the total number of samples in the dataset."""
@@ -69,7 +69,6 @@ class AuctionDataset(Dataset):
             idx = idx.tolist()
 
         # Get feature row as a dictionary
-        # Using .iloc[idx].to_dict() is convenient here
         feature_sample = self.features.iloc[idx].to_dict()
 
         # Get target value
