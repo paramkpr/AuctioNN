@@ -1,4 +1,4 @@
-# AuctionDataset
+# AuctionDataset (BAD - NOT UPDATED)
 
 **`src.data_processing.datasets.AuctionDataset(dataframe, target_column='conversion_flag')`**
 

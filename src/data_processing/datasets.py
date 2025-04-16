@@ -1,19 +1,37 @@
 import torch
 from torch.utils.data import Dataset
 import pandas as pd
+import numpy as np
+from sklearn.preprocessing import OrdinalEncoder, StandardScaler
 
 class AuctionDataset(Dataset):
     """
     PyTorch Dataset for the cleaned auction data.
 
-    Takes a preprocessed pandas DataFrame, separates features and target,
-    and allows iteration over samples.
+    Takes a pandas DataFrame slice (train/val/test), separates features and target,
+    and applies pre-fitted transformations (encoder, scaler) during __getitem__.
     """
-    def __init__(self, dataframe: pd.DataFrame, target_column: str = 'conversion_flag'):
+    def __init__(self,
+                 dataframe: pd.DataFrame,
+                 target_column: str = 'conversion_flag',
+                 categorical_encoder: OrdinalEncoder = None,
+                 numerical_scaler: StandardScaler = None,
+                 categorical_features: list[str] = None,
+                 boolean_features: list[str] = None,
+                 cyclical_features: list[str] = None,
+                 numerical_features_to_scale: list[str] = None
+                 ):
         """
         Args:
-            dataframe (pd.DataFrame): The cleaned and preprocessed DataFrame.
+            dataframe (pd.DataFrame): The DataFrame slice for this dataset (e.g., train_df).
             target_column (str): The name of the target variable column.
+            categorical_encoder (OrdinalEncoder): Fitted sklearn OrdinalEncoder.
+            numerical_scaler (StandardScaler): Fitted sklearn StandardScaler.
+            categorical_features (list): List of names of categorical columns.
+            boolean_features (list): List of names of boolean columns.
+            cyclical_features (list): List of names of cyclical columns.
+            numerical_features_to_scale (list): List of names of the final numerical columns
+                                                (after bool/cyclical processing) expected by scaler.
         """
         super().__init__()
 
@@ -22,31 +40,28 @@ class AuctionDataset(Dataset):
         if target_column not in dataframe.columns:
             raise ValueError(f"Target column '{target_column}' not found in DataFrame.")
 
-        self.target = torch.tensor(dataframe[target_column].values, dtype=torch.float32) # Often float for binary classification loss functions
+        if not all([categorical_encoder, numerical_scaler, categorical_features,
+                    boolean_features, cyclical_features, numerical_features_to_scale]):
+            raise ValueError("Must provide all preprocessors and feature lists.")
 
-        # Separate features (X)
-        # Drop target and other potentially non-feature columns like IDs or original timestamps
-        # Adjust this list based on the final columns in your cleaned DataFrame
-        columns_to_drop_for_features = [
-            target_column,
-            'unique_id',
-            'impression_dttm_utc',
-            'conv_dttm_utc',
-            'dte', # Partition column, likely not a feature
-             # Add any other columns that are not features for the model
-        ]
-        feature_columns = [col for col in dataframe.columns if col not in columns_to_drop_for_features]
+        self.categorical_encoder = categorical_encoder
+        self.numerical_scaler = numerical_scaler
+        self.categorical_features = categorical_features
+        self.boolean_features = boolean_features
+        self.cyclical_features = cyclical_features
+        self.numerical_features_to_scale = numerical_features_to_scale
 
-        # Store features as a DataFrame for now. Further processing (e.g., encoding, scaling)
-        # can happen here or later in the pipeline / model's forward pass.
-        self.features = dataframe[feature_columns].copy()
+        self.target = torch.tensor(dataframe[target_column].values, dtype=torch.float32)
 
-        # Store feature names for potential use later (e.g., mapping back)
-        self.feature_names = self.features.columns.tolist()
+        model_feature_columns = self.categorical_features + self.boolean_features + self.cyclical_features
+
+        missing_model_features = [col for col in model_feature_columns if col not in dataframe.columns]
+        if missing_model_features:
+            raise ValueError(f"DataFrame is missing required model feature columns: {missing_model_features}")
+
+        self.features_df = dataframe[model_feature_columns].copy()
 
         print(f"Dataset initialized. Number of samples: {len(self.target)}")
-        print(f"Number of features: {len(self.feature_names)}")
-        print(f"Feature names: {self.feature_names}")
 
     def __len__(self):
         """Returns the total number of samples in the dataset."""
@@ -54,24 +69,52 @@ class AuctionDataset(Dataset):
 
     def __getitem__(self, idx):
         """
-        Retrieves the features and target for a given index.
+        Retrieves and preprocesses a single sample from the dataset.
 
         Args:
             idx (int): The index of the sample to retrieve.
 
         Returns:
             tuple: A tuple containing:
-                - dict: A dictionary where keys are feature names and values
-                        are the corresponding feature values for the sample.
-                - torch.Tensor: The target value for the sample.
+                - categorical_data (torch.LongTensor): Tensor of encoded categorical features.
+                - numerical_data (torch.FloatTensor): Tensor of scaled numerical features.
+                - target (torch.FloatTensor): The target value for the sample.
         """
         if torch.is_tensor(idx):
             idx = idx.tolist()
 
-        # Get feature row as a dictionary
-        feature_sample = self.features.iloc[idx].to_dict()
+        sample_features = self.features_df.iloc[idx]
+        sample_target = self.target[idx]
 
-        # Get target value
-        target_sample = self.target[idx]
+        # --- 1. Process Categorical Features ---
+        # Create a DataFrame with the expected column names
+        cat_df_slice = pd.DataFrame([sample_features[self.categorical_features].values], columns=self.categorical_features)
+        # Transform the DataFrame
+        encoded_cats = self.categorical_encoder.transform(cat_df_slice).flatten()
 
-        return feature_sample, target_sample
+        # Handle unknowns (-1 -> 0, shift others +1)
+        encoded_cats[encoded_cats == -1] = 0
+        encoded_cats[encoded_cats > -1] += 1
+        categorical_data = torch.LongTensor(encoded_cats)
+
+        # --- 2. Process Numerical Features (Boolean + Cyclical -> Scale) ---
+        processed_numerical = {}
+        for col in self.boolean_features:
+             processed_numerical[col] = float(sample_features[col])
+        # ... (cyclical transformations remain the same) ...
+        hour = sample_features['impression_hour']
+        day = sample_features['impression_dayofweek']
+        processed_numerical['hour_sin'] = np.sin(2 * np.pi * hour / 24.0)
+        processed_numerical['hour_cos'] = np.cos(2 * np.pi * hour / 24.0)
+        processed_numerical['day_sin'] = np.sin(2 * np.pi * day / 7.0)
+        processed_numerical['day_cos'] = np.cos(2 * np.pi * day / 7.0)
+
+        # Create a DataFrame slice in the correct order with expected names
+        numerical_values_ordered = [processed_numerical[col] for col in self.numerical_features_to_scale]
+        num_df_slice = pd.DataFrame([numerical_values_ordered], columns=self.numerical_features_to_scale)
+
+        # Scale the DataFrame
+        scaled_numerical = self.numerical_scaler.transform(num_df_slice).flatten()
+        numerical_data = torch.FloatTensor(scaled_numerical)
+
+        return categorical_data, numerical_data, sample_target

@@ -6,13 +6,17 @@ The functions are:
 - save_dataframe_to_parquet: Saves a pandas DataFrame to a Parquet file.
 
 """
+import math # Import math for ceiling division
+import os
+import multiprocessing
 
+
+import joblib
 import pandas as pd
 from user_agents import parse
 from tqdm import tqdm
-import multiprocessing
 import numpy as np
-import math # Import math for ceiling division
+from sklearn.preprocessing import StandardScaler, OrdinalEncoder
 
 tqdm.pandas()
 
@@ -208,3 +212,104 @@ def save_dataframe_to_parquet(df: pd.DataFrame, output_path: str):
     except Exception as e:
         print(f"Error saving DataFrame to {output_path}: {e}")
 
+
+# --- New Function for Preprocessing Fitting ---
+
+
+def fit_and_save_preprocessors(
+    train_df: pd.DataFrame,
+    output_dir: str = './preprocessors',
+    categorical_features: list[str] | None = None,
+    boolean_features: list[str] | None = None,
+    cyclical_features: list[str] | None = None
+):
+    """
+    Fits OrdinalEncoder and StandardScaler using ONLY the provided training DataFrame,
+    and saves the fitted objects and feature lists.
+
+    Args:
+        train_df: The training DataFrame slice.
+        output_dir: Directory to save the fitted preprocessors and feature lists.
+        categorical_features: List of categorical column names. If None, defaults are used.
+        boolean_features: List of boolean column names. If None, defaults are used.
+        cyclical_features: List of cyclical column names. If None, defaults are used.
+
+    Returns:
+        tuple: Contains the fitted components (useful if called programmatically).
+    """
+    print(f"\n--- Starting Preprocessor Fitting on Provided Training Data (shape: {train_df.shape}) ---")
+    # Removed: Loading data, splitting data
+    os.makedirs(output_dir, exist_ok=True)
+
+    # --- Define Feature Groups (Use defaults if not provided) ---
+    if categorical_features is None:
+        categorical_features = [
+            'placement_id', 'cnxn_type', 'dma', 'country', 'prizm_premier_code',
+            'campaign_id', 'ua_browser', 'ua_os', 'ua_device_family', 'ua_device_brand'
+        ]
+    if boolean_features is None:
+        boolean_features = [
+            'ua_is_mobile', 'ua_is_tablet', 'ua_is_pc', 'ua_is_bot'
+        ]
+    if cyclical_features is None:
+        cyclical_features = [
+            'impression_hour', 'impression_dayofweek'
+        ]
+
+    # --- Verify Features Exist in DataFrame ---
+    all_input_features = categorical_features + boolean_features + cyclical_features
+    missing_cols = [col for col in all_input_features if col not in train_df.columns]
+    if missing_cols:
+        # Error message is now simpler as the DataFrame is passed directly
+        print("ERROR: The provided train_df is missing expected feature columns:")
+        for col in missing_cols:
+            print(f"  - {col}")
+        raise ValueError("Missing expected feature columns in train_df.")
+
+    # --- Fit Categorical Encoder ---
+    print("Fitting categorical encoder...")
+    categorical_encoder = OrdinalEncoder(
+        handle_unknown='use_encoded_value',
+        unknown_value=-1,
+        dtype=np.int64
+    )
+    categorical_encoder.fit(train_df[categorical_features])
+    category_sizes = {
+        col: len(cats) + 1
+        for col, cats in zip(categorical_features, categorical_encoder.categories_)
+    }
+    print("Categorical encoder fitted.") # Simplified output
+
+    # --- Prepare and Fit Numerical Scaler ---
+    print("Preparing numerical features for scaling...")
+    temp_numeric_df = pd.DataFrame(index=train_df.index)
+    for col in boolean_features:
+        temp_numeric_df[col] = train_df[col].astype(float)
+    hour = train_df['impression_hour']
+    day = train_df['impression_dayofweek']
+    temp_numeric_df['hour_sin'] = np.sin(2 * np.pi * hour / 24.0)
+    temp_numeric_df['hour_cos'] = np.cos(2 * np.pi * hour / 24.0)
+    temp_numeric_df['day_sin'] = np.sin(2 * np.pi * day / 7.0)
+    temp_numeric_df['day_cos'] = np.cos(2 * np.pi * day / 7.0)
+    numerical_features_to_scale = temp_numeric_df.columns.tolist()
+    print(f"Numerical columns created for scaling: {len(numerical_features_to_scale)}")
+
+    print("Fitting numerical scaler...")
+    numerical_scaler = StandardScaler()
+    numerical_scaler.fit(temp_numeric_df[numerical_features_to_scale])
+    print("Numerical scaler fitted.")
+
+    # --- Save Preprocessors and Feature Lists (logic unchanged) ---
+    joblib.dump(categorical_encoder, os.path.join(output_dir, 'categorical_encoder.joblib'))
+    joblib.dump(numerical_scaler, os.path.join(output_dir, 'numerical_scaler.joblib'))
+    joblib.dump(category_sizes, os.path.join(output_dir, 'category_sizes.joblib'))
+    joblib.dump(categorical_features, os.path.join(output_dir, 'categorical_features.joblib'))
+    joblib.dump(boolean_features, os.path.join(output_dir, 'boolean_features.joblib'))
+    joblib.dump(cyclical_features, os.path.join(output_dir, 'cyclical_features.joblib'))
+    joblib.dump(numerical_features_to_scale, os.path.join(output_dir, 'numerical_features_to_scale.joblib'))
+
+    print(f"Preprocessors and feature lists saved successfully to '{output_dir}'")
+    print("--- Preprocessor Fitting Complete ---")
+
+    return (categorical_encoder, numerical_scaler, category_sizes,
+            categorical_features, boolean_features, cyclical_features, numerical_features_to_scale)
