@@ -22,6 +22,9 @@ __pycache__/
 # Data
 data/test_dataset/
 data/clean_data.parquet
+data/processed_splits/
+
+# models
 
 # MacOS
 .DS_Store

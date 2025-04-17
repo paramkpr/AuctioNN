@@ -31,15 +31,18 @@ import pandas as pd
 import numpy as np # Import numpy for stratification check
 from sklearn.model_selection import train_test_split # Needed for splitting
 import os # Needed for checking path writability, creating dirs
+import shutil # To potentially remove temp processing dir
 
 # Import necessary functions from preprocess
 from src.data_processing.preprocess import (
     clean_and_merge_data,
     save_dataframe_to_parquet,
-    fit_and_save_preprocessors # <-- Import the new function
+    fit_and_save_preprocessors,
+    apply_preprocessors_to_split # <-- Import the new function
 )
 # Import the training function
 from src.training.train_model import run_training # Ensure correct path
+from src.evaluation.evaluate_model import run_evaluation # <-- Import evaluation function
 
 @click.group()
 def cli():
@@ -237,21 +240,35 @@ def fit_preprocessors(cleaned_data_file, output_dir, test_split_ratio, val_split
     help="Path to save the best trained model.",
     type=click.Path(dir_okay=False, writable=True) # Ensure path is writable
 )
-# Add split parameters here as well to ensure consistent splitting
+@click.option(
+    "--processed-data-dir",
+    "-o",
+    default="./data/processed_splits", # Default location for processed .npy files
+    help="Directory to save/load pre-processed NumPy arrays for splits.",
+    type=click.Path(file_okay=False, writable=True)
+)
+@click.option(
+    "--force-reprocess",
+    is_flag=True,
+    default=False,
+    help="Force reprocessing of data splits even if .npy files exist."
+)
+# Split parameters remain
 @click.option("--test-split-ratio", default=0.15, type=click.FloatRange(0.0, 0.9), help="Proportion for test set.")
 @click.option("--val-split-ratio", default=0.15, type=click.FloatRange(0.0, 0.9), help="Proportion of non-test for validation.")
 @click.option("--target-column", default="conversion_flag", help="Target column for stratification.")
 @click.option("--random-state", default=42, type=int, help="Random seed for splits.")
-# Add other relevant training hyperparameters
+# Other training hyperparameters
 @click.option("--learning-rate", default=1e-3, type=float, help="Optimizer learning rate.")
 @click.option("--embedding-dim", default=32, type=int, help="Dimension for categorical embeddings.")
-# Note: hidden_dims/dropout use defaults in run_training, add CLI options if needed
 def train(
     epochs, batch_size, cleaned_data_file, preprocessor_dir, save_model_path,
-    test_split_ratio, val_split_ratio, target_column, random_state, learning_rate, embedding_dim
+    test_split_ratio, val_split_ratio, target_column, random_state, learning_rate, embedding_dim,
+    processed_data_dir, force_reprocess # Add new args
 ):
     """
-    Load data, split it, load preprocessors, and train the model.
+    Load data, split it, pre-process splits (if needed), load preprocessors,
+    and train the model using processed NumPy arrays.
     """
     click.echo("--- Preparing for Training ---")
     click.echo(f"Loading data from {cleaned_data_file}...")
@@ -263,103 +280,95 @@ def train(
         if target_column not in full_df.columns:
             raise ValueError(f"Target column '{target_column}' not found.")
         targets_np = full_df[target_column].to_numpy()
+        test_df = pd.DataFrame()
+        val_df = pd.DataFrame()
+        train_df = pd.DataFrame()
 
-        # Split test set off first
         if test_split_ratio > 0:
             can_stratify_full = len(np.unique(targets_np)) > 1
             stratify_full = targets_np if can_stratify_full else None
-            if not can_stratify_full:
-                 click.echo("Warning: Cannot stratify initial test split (only one class in full dataset).")
-
-            train_val_df, test_df = train_test_split( # Need test_df later for evaluation
-                full_df,
-                test_size=test_split_ratio,
-                random_state=random_state,
-                stratify=stratify_full
+            train_val_df, test_df = train_test_split(
+                full_df, test_size=test_split_ratio, random_state=random_state, stratify=stratify_full
             )
             targets_train_val_np = train_val_df[target_column].to_numpy() if not train_val_df.empty else np.array([])
         else:
             train_val_df = full_df
-            test_df = pd.DataFrame() # Empty DataFrame if no test split
             targets_train_val_np = targets_np
 
-        # Split validation set off from the rest
         if val_split_ratio > 0 and not train_val_df.empty:
             current_train_val_ratio = 1.0 - test_split_ratio
             relative_val_ratio = val_split_ratio / current_train_val_ratio if current_train_val_ratio > 0 else val_split_ratio
-
             if relative_val_ratio >= 1.0:
                  train_df = train_val_df
-                 val_df = pd.DataFrame() # No validation set if ratio too high
-                 click.echo("Warning: Validation split resulted in empty training set or empty validation set.")
             else:
                 can_stratify_val = len(np.unique(targets_train_val_np)) > 1
                 stratify_val = targets_train_val_np if can_stratify_val else None
-                if not can_stratify_val:
-                    click.echo("Warning: Cannot stratify validation split (only one class in train_val data). Performing non-stratified split.")
-
                 try:
-                    train_df, val_df = train_test_split( # Need both train_df and val_df
-                        train_val_df,
-                        test_size=relative_val_ratio,
-                        random_state=random_state,
-                        stratify=stratify_val
-                    )
-                except ValueError as e:
-                    click.echo(f"Warning: Stratified validation split failed ({e}). Performing non-stratified split.")
                     train_df, val_df = train_test_split(
-                        train_val_df,
-                        test_size=relative_val_ratio,
-                        random_state=random_state
+                        train_val_df, test_size=relative_val_ratio, random_state=random_state, stratify=stratify_val
                     )
+                except ValueError: # Fallback if stratification fails
+                     train_df, val_df = train_test_split(
+                         train_val_df, test_size=relative_val_ratio, random_state=random_state
+                     )
         else:
             train_df = train_val_df
-            val_df = pd.DataFrame() # No validation set
-
-        # --- Sanity Checks for Splits ---
-        if train_df.empty:
-            raise ValueError("Training data split resulted in an empty DataFrame. Check split ratios.")
-        if val_df.empty:
-             click.echo("Warning: Validation data split is empty. Proceeding without validation loop in run_training.")
-             # Note: run_training needs logic to handle this gracefully.
-             # For now, we'll proceed but it might fail or skip validation inside run_training.
-
 
         click.echo(f"Data splits created: Train={train_df.shape}, Val={val_df.shape}, Test={test_df.shape}")
+
+        # --- Apply Preprocessing to Splits ---
+        os.makedirs(processed_data_dir, exist_ok=True)
+        # Check if files already exist (using one file as a proxy)
+        train_tgt_exists = os.path.exists(os.path.join(processed_data_dir, "train_target_data.npy"))
+        val_tgt_exists = os.path.exists(os.path.join(processed_data_dir, "val_target_data.npy"))
+        test_tgt_exists = os.path.exists(os.path.join(processed_data_dir, "test_target_data.npy"))
+
+        # Determine if reprocessing is needed for any split
+        needs_reprocessing = force_reprocess or not train_tgt_exists or \
+                             (not val_df.empty and not val_tgt_exists) or \
+                             (not test_df.empty and not test_tgt_exists)
+
+        if needs_reprocessing:
+            click.echo(f"Preprocessing splits and saving to {processed_data_dir}...")
+            if force_reprocess: click.echo("(Force reprocess enabled)")
+            apply_preprocessors_to_split(train_df, preprocessor_dir, processed_data_dir, 'train', target_column)
+            apply_preprocessors_to_split(val_df, preprocessor_dir, processed_data_dir, 'val', target_column)
+            apply_preprocessors_to_split(test_df, preprocessor_dir, processed_data_dir, 'test', target_column)
+        else:
+            click.echo(f"Found existing processed splits in {processed_data_dir}, skipping reprocessing.")
+
 
         # --- Ensure output directory for model exists ---
         os.makedirs(os.path.dirname(save_model_path), exist_ok=True)
 
         # --- Call the refactored training function ---
-        # Pass only non-empty val_df to avoid issues inside run_training if it expects data
-        if not val_df.empty:
-            run_training(
-                train_df=train_df,
-                val_df=val_df,
-                preprocessor_dir=preprocessor_dir,
-                save_model_path=save_model_path,
-                target_column=target_column,
-                epochs=epochs,
-                batch_size=batch_size,
-                learning_rate=learning_rate,
-                embedding_dim=embedding_dim,
-                random_state=random_state
-                # hidden_dims/dropout use defaults from run_training
-            )
-            # run_training prints its own completion message
-        else:
-             click.echo("Skipping training run because validation DataFrame is empty.")
-             # TODO: Optionally implement training without validation in run_training
-             # Or just accept that training requires a validation set with this setup.
+        run_training(
+            processed_data_dir=processed_data_dir, # Pass directory of .npy files
+            preprocessor_dir=preprocessor_dir,     # Pass directory for category_sizes etc.
+            save_model_path=save_model_path,
+            # target_column removed from run_training args
+            epochs=epochs,
+            batch_size=batch_size,
+            learning_rate=learning_rate,
+            embedding_dim=embedding_dim,
+            random_state=random_state
+            # hidden_dims/dropout use defaults from run_training
+        )
+        # run_training prints its own completion messages
 
-        # TODO: Add step to evaluate on the test_df using the saved best model
+        # TODO: Add step to evaluate on the test split using the saved best model
+        # test_loader = DataLoader(AuctionDataset(processed_data_dir, 'test'), ...)
+        # model.load_state_dict(torch.load(save_model_path))
+        # evaluate(model, test_loader, ...)
 
-    except FileNotFoundError:
-         click.echo(f"ERROR: Cleaned data file not found at {cleaned_data_file}", err=True)
+    except FileNotFoundError as e:
+         click.echo(f"ERROR: Input file not found. {e}", err=True)
     except ValueError as ve:
          click.echo(f"ERROR: {ve}", err=True)
     except Exception as e:
         click.echo(f"ERROR during training preparation or execution: {e}", err=True)
+        import traceback
+        traceback.print_exc() # Print traceback for detailed debugging
 
 
 @cli.command()
@@ -382,19 +391,69 @@ def allocate(method):
 
 
 @cli.command()
-def evaluate():
+@click.option(
+    "--processed-data-dir",
+    "-d",
+    default="./data/processed_splits",
+    help="Directory containing the processed test split (.npy files).",
+    type=click.Path(exists=True, file_okay=False, readable=True)
+)
+@click.option(
+    "--preprocessor-dir",
+    "-p",
+    default="./preprocessors",
+    help="Directory containing preprocessor info (for model initialization).",
+    type=click.Path(exists=True, file_okay=False, readable=True)
+)
+@click.option(
+    "--model-path",
+    "-m",
+    default="./models/best_auction_network.pth",
+    help="Path to the saved trained model (.pth file).",
+    type=click.Path(exists=True, dir_okay=False, readable=True)
+)
+@click.option(
+    "--batch-size",
+    default=1024,
+    type=int,
+    help="Batch size for evaluation."
+)
+@click.option(
+    "--threshold",
+    default=0.5,
+    type=click.FloatRange(0.0, 1.0),
+    help="Probability threshold for calculating secondary metrics (accuracy, etc.)."
+)
+def evaluate(processed_data_dir, preprocessor_dir, model_path, batch_size, threshold):
     """
-    Evaluate the system performance on test data.
+    Evaluate the trained model performance on the test data.
+    """
+    click.echo("--- Starting Model Evaluation ---")
+    click.echo(f" Evaluating model: {model_path}")
+    click.echo(f" Using test data from: {processed_data_dir}")
+    click.echo(f" Using preprocessor info from: {preprocessor_dir}")
 
-    This may include metrics like:
-    - Total conversions
-    - Revenue
-    - Fairness (distribution across advertisers)
-    - Social welfare
-    """
-    click.echo("Evaluating system performance...")
-    # TODO: call evaluation logic here
-    click.echo("(Placeholder) Evaluation complete.")
+    try:
+        # Call the evaluation function
+        results = run_evaluation(
+            processed_data_dir=processed_data_dir,
+            preprocessor_dir=preprocessor_dir,
+            model_path=model_path,
+            batch_size=batch_size,
+            threshold=threshold
+            # device=None will auto-detect
+        )
+
+        if not results:
+             click.echo("Evaluation did not produce results (e.g., test set empty).")
+        # run_evaluation already prints the metrics
+
+    except FileNotFoundError as e:
+        click.echo(f"ERROR: Required file not found. {e}", err=True)
+    except Exception as e:
+        click.echo(f"ERROR during evaluation: {e}", err=True)
+        import traceback
+        traceback.print_exc()
 
 
 @cli.command()

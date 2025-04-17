@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
-import pandas as pd
 import joblib
 import os
 from tqdm import tqdm
@@ -13,11 +12,9 @@ from src.data_processing.datasets import AuctionDataset
 from src.models.network import AuctionNetwork
 
 def run_training(
-    train_df: pd.DataFrame,
-    val_df: pd.DataFrame,
+    processed_data_dir: str,
     preprocessor_dir: str,
     save_model_path: str = './models/best_auction_network.pth',
-    target_column: str = 'conversion_flag',
     epochs: int = 10,
     batch_size: int = 1024,
     learning_rate: float = 1e-3,
@@ -28,15 +25,13 @@ def run_training(
     device: str | None = None
 ):
     """
-    Loads preprocessors, sets up datasets/dataloaders from provided DataFrames,
-    defines the model, and runs the training/validation loop.
+    Loads preprocessors (for model dims), pre-processed data arrays,
+    sets up datasets/dataloaders, defines the model, and runs the training loop.
 
     Args:
-        train_df: DataFrame for the training set.
-        val_df: DataFrame for the validation set.
-        preprocessor_dir: Directory containing fitted preprocessors.
+        processed_data_dir: Directory containing the processed .npy files for train/val splits.
+        preprocessor_dir: Directory containing fitted preprocessors (used for category_sizes).
         save_model_path: Path to save the best trained model state dictionary.
-        target_column: Name of the target variable.
         epochs: Number of training epochs.
         batch_size: Batch size for training and validation.
         learning_rate: Learning rate for the Adam optimizer.
@@ -58,43 +53,50 @@ def run_training(
     if resolved_device == "cuda":
         torch.cuda.manual_seed_all(random_state)
 
-    # --- Load Preprocessors ---
-    print(f"Loading preprocessors from: {preprocessor_dir}")
+    # --- Load *Necessary* Preprocessors (category sizes, feature count) ---
+    print(f"Loading preprocessor info from: {preprocessor_dir}")
     try:
-        categorical_encoder = joblib.load(os.path.join(preprocessor_dir, 'categorical_encoder.joblib'))
-        numerical_scaler = joblib.load(os.path.join(preprocessor_dir, 'numerical_scaler.joblib'))
+        # Load only what's needed for model init and loss weight
         category_sizes = joblib.load(os.path.join(preprocessor_dir, 'category_sizes.joblib'))
-        categorical_features = joblib.load(os.path.join(preprocessor_dir, 'categorical_features.joblib'))
-        boolean_features = joblib.load(os.path.join(preprocessor_dir, 'boolean_features.joblib'))
-        cyclical_features = joblib.load(os.path.join(preprocessor_dir, 'cyclical_features.joblib'))
         numerical_features_to_scale = joblib.load(os.path.join(preprocessor_dir, 'numerical_features_to_scale.joblib'))
         num_numerical_features = len(numerical_features_to_scale)
+        # Load target data for pos_weight calculation
+        train_tgt_path = os.path.join(processed_data_dir, "train_target_data.npy")
+        train_targets_np = np.load(train_tgt_path)
     except FileNotFoundError as e:
-        print(f"ERROR: Failed to load preprocessor files from {preprocessor_dir}. Did you run 'fit-preprocessors'? Details: {e}")
+        print(f"ERROR: Failed to load necessary preprocessor/data files. Details: {e}")
         raise
-    print("Preprocessors loaded successfully.")
+    print("Preprocessor info loaded successfully.")
 
-    # --- DataFrames are now passed directly ---
-    print(f"Using provided DataFrames: Train={train_df.shape}, Validation={val_df.shape}")
 
-    # --- Create Datasets ---
-    common_args = {
-        'target_column': target_column,
-        'categorical_encoder': categorical_encoder,
-        'numerical_scaler': numerical_scaler,
-        'categorical_features': categorical_features,
-        'boolean_features': boolean_features,
-        'cyclical_features': cyclical_features,
-        'numerical_features_to_scale': numerical_features_to_scale
-    }
-    print("Creating Datasets...")
-    train_dataset = AuctionDataset(dataframe=train_df, **common_args)
-    val_dataset = AuctionDataset(dataframe=val_df, **common_args)
+    # --- Create Datasets from processed .npy files ---
+    print("Creating Datasets from pre-processed files...")
+    try:
+        train_dataset = AuctionDataset(processed_data_dir=processed_data_dir, split_name='train')
+        val_dataset = AuctionDataset(processed_data_dir=processed_data_dir, split_name='val')
+        # Assuming test data would be loaded similarly if needed later
+    except FileNotFoundError:
+         print(f"ERROR: Failed to find train/val .npy files in {processed_data_dir}. Make sure preprocessing was run.")
+         raise
+    except ValueError as ve: # Catch shape mismatch error from Dataset init
+         print(f"ERROR: {ve}")
+         raise
+
 
     # --- Create DataLoaders ---
     print("Creating DataLoaders...")
+    # Check if datasets are non-empty before creating loaders
+    if len(train_dataset) == 0:
+        raise ValueError("Training dataset is empty.")
+    if len(val_dataset) == 0:
+        # If validation is empty, we might want to skip it or handle differently
+        print("Warning: Validation dataset is empty. Training without validation.")
+        val_loader = None # Set loader to None
+    else:
+         val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=min(4, os.cpu_count()), pin_memory=True)
+
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=min(4, os.cpu_count()), pin_memory=True)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=min(4, os.cpu_count()), pin_memory=True)
+
 
     # --- Initialize Model ---
     print("Initializing model...")
@@ -108,11 +110,10 @@ def run_training(
     print(model)
 
     # --- Define Loss Function and Optimizer ---
-    # Calculate pos_weight based on the training data split only
     print("Calculating positive weight for loss function...")
-    target_counts = train_df[target_column].value_counts() # Use train_df now
-    neg_count = target_counts.get(0, 0)
-    pos_count = target_counts.get(1, 0)
+    # Use the loaded training targets
+    neg_count = np.sum(train_targets_np == 0)
+    pos_count = np.sum(train_targets_np == 1)
     pos_weight_value = float(neg_count / pos_count) if pos_count > 0 else 1.0
     print(f"Using pos_weight: {pos_weight_value:.4f}")
     criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(pos_weight_value, device=resolved_device))
@@ -123,67 +124,79 @@ def run_training(
     print(f"\n--- Starting Training for {epochs} Epochs ---")
 
     for epoch in range(epochs):
-        # --- Training Phase ---
+        # --- Training Phase (largely unchanged) ---
         model.train()
         train_loss = 0.0
         train_loop = tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs} [Train]", leave=False)
         for cat_batch, num_batch, target_batch in train_loop:
-            cat_batch = cat_batch.to(resolved_device)
-            num_batch = num_batch.to(resolved_device)
-            target_batch = target_batch.to(resolved_device).unsqueeze(1) # Add dim for loss fn
+             cat_batch = cat_batch.to(resolved_device)
+             num_batch = num_batch.to(resolved_device)
+             target_batch = target_batch.to(resolved_device).unsqueeze(1) # Add dim for loss fn
 
-            optimizer.zero_grad()
-            outputs = model(cat_batch, num_batch)
-            loss = criterion(outputs, target_batch)
-            loss.backward()
-            optimizer.step()
+             optimizer.zero_grad()
+             outputs = model(cat_batch, num_batch)
+             loss = criterion(outputs, target_batch)
+             loss.backward()
+             optimizer.step()
 
-            train_loss += loss.item()
-            train_loop.set_postfix(loss=loss.item())
-
+             train_loss += loss.item()
+             train_loop.set_postfix(loss=loss.item())
         avg_train_loss = train_loss / len(train_loader)
 
         # --- Validation Phase ---
-        model.eval()
-        val_loss = 0.0
-        val_preds = []
-        val_targets = []
-        val_loop = tqdm(val_loader, desc=f"Epoch {epoch+1}/{epochs} [Val]", leave=False)
-        with torch.no_grad():
-            for cat_batch, num_batch, target_batch in val_loop:
-                cat_batch = cat_batch.to(resolved_device)
-                num_batch = num_batch.to(resolved_device)
-                target_batch = target_batch.to(resolved_device).unsqueeze(1)
-                val_targets.append(target_batch.cpu())
+        avg_val_loss = float('nan') # Default if no validation
+        accuracy = float('nan')
+        if val_loader: # Only run validation if loader exists
+            model.eval()
+            val_loss = 0.0
+            val_preds = []
+            val_targets = []
+            val_loop = tqdm(val_loader, desc=f"Epoch {epoch+1}/{epochs} [Val]", leave=False)
+            with torch.no_grad():
+                for cat_batch, num_batch, target_batch in val_loop:
+                     cat_batch = cat_batch.to(resolved_device)
+                     num_batch = num_batch.to(resolved_device)
+                     target_batch = target_batch.to(resolved_device).unsqueeze(1)
+                     val_targets.append(target_batch.cpu())
 
-                outputs = model(cat_batch, num_batch)
-                loss = criterion(outputs, target_batch)
-                val_loss += loss.item()
+                     outputs = model(cat_batch, num_batch)
+                     loss = criterion(outputs, target_batch)
+                     val_loss += loss.item()
 
-                # Store predictions (sigmoid needed for accuracy/AUC calc)
-                preds = torch.sigmoid(outputs)
-                val_preds.append(preds.cpu())
-                val_loop.set_postfix(loss=loss.item())
+                     preds = torch.sigmoid(outputs)
+                     val_preds.append(preds.cpu())
+                     val_loop.set_postfix(loss=loss.item())
 
-        avg_val_loss = val_loss / len(val_loader)
+            avg_val_loss = val_loss / len(val_loader)
+            all_preds = torch.cat(val_preds)
+            all_targets = torch.cat(val_targets)
+            accuracy = ((all_preds > 0.5).float() == all_targets).float().mean().item()
 
-        # --- Calculate Validation Metrics (Example: Accuracy) ---
-        all_preds = torch.cat(val_preds)
-        all_targets = torch.cat(val_targets)
-        # Simple accuracy - threshold at 0.5
-        accuracy = ((all_preds > 0.5).float() == all_targets).float().mean().item()
-        # TODO: Consider adding AUC calculation using sklearn.metrics.roc_auc_score(all_targets.numpy(), all_preds.numpy())
+            print(f"Epoch {epoch+1}/{epochs} => Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f} | Val Acc: {accuracy:.4f}")
 
-        print(f"Epoch {epoch+1}/{epochs} => Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f} | Val Acc: {accuracy:.4f}")
+            # --- Save Best Model (only if validation occurred) ---
+            if avg_val_loss < best_val_loss:
+                best_val_loss = avg_val_loss
+                os.makedirs(os.path.dirname(save_model_path), exist_ok=True)
+                torch.save(model.state_dict(), save_model_path)
+                print(f"  -> Saved best model to {save_model_path} (Val Loss: {best_val_loss:.4f})")
+        else:
+             # No validation, just print train loss
+             print(f"Epoch {epoch+1}/{epochs} => Train Loss: {avg_train_loss:.4f} | (No validation)")
+             # Optionally save model based on training loss or just save last epoch
+             # if avg_train_loss < best_train_loss: # Example if saving on train loss
+             #    best_train_loss = avg_train_loss
+             #    torch.save(model.state_dict(), save_model_path)
+             #    print(f"  -> Saved model based on train loss: {save_model_path}")
 
-        # --- Save Best Model ---
-        if avg_val_loss < best_val_loss:
-            best_val_loss = avg_val_loss
-            # Ensure directory exists
-            os.makedirs(os.path.dirname(save_model_path), exist_ok=True)
-            torch.save(model.state_dict(), save_model_path)
-            print(f"  -> Saved best model to {save_model_path} (Val Loss: {best_val_loss:.4f})")
 
     print("--- Training Complete ---")
-    print(f"Best validation loss achieved: {best_val_loss:.4f}")
-    print(f"Best model saved to: {save_model_path}")
+    if val_loader:
+        print(f"Best validation loss achieved: {best_val_loss:.4f}")
+        print(f"Best model saved to: {save_model_path}")
+    else:
+        print("Training finished (no validation performed).")
+        # Consider saving the final model state if no validation
+        final_model_path = save_model_path.replace('.pth', '_final.pth')
+        torch.save(model.state_dict(), final_model_path)
+        print(f"Final model state saved to: {final_model_path}")

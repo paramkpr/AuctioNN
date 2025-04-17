@@ -313,3 +313,99 @@ def fit_and_save_preprocessors(
 
     return (categorical_encoder, numerical_scaler, category_sizes,
             categorical_features, boolean_features, cyclical_features, numerical_features_to_scale)
+
+def apply_preprocessors_to_split(
+    df_split: pd.DataFrame,
+    preprocessor_dir: str,
+    output_dir: str,
+    split_name: str, # e.g., 'train', 'val', 'test' for filenames
+    target_column: str = 'conversion_flag'
+):
+    """
+    Applies pre-fitted preprocessors to a data split (DataFrame) and saves
+    the resulting processed NumPy arrays.
+
+    Args:
+        df_split: The DataFrame slice to process (e.g., train_df, val_df).
+        preprocessor_dir: Directory where fitted preprocessors and feature lists are saved.
+        output_dir: Directory to save the processed NumPy arrays.
+        split_name: Name for this split (e.g., 'train', 'val') used in output filenames.
+        target_column: Name of the target variable column.
+    """
+    if df_split.empty:
+        print(f"Skipping preprocessing for empty DataFrame split '{split_name}'.")
+        return
+
+    print(f"\n--- Applying Preprocessors to '{split_name}' Split (shape: {df_split.shape}) ---")
+    os.makedirs(output_dir, exist_ok=True)
+
+    # --- Load Preprocessors and Feature Lists ---
+    print(f"Loading preprocessors from: {preprocessor_dir}")
+    try:
+        categorical_encoder = joblib.load(os.path.join(preprocessor_dir, 'categorical_encoder.joblib'))
+        numerical_scaler = joblib.load(os.path.join(preprocessor_dir, 'numerical_scaler.joblib'))
+        # category_sizes = joblib.load(os.path.join(preprocessor_dir, 'category_sizes.joblib')) # Not needed here
+        categorical_features = joblib.load(os.path.join(preprocessor_dir, 'categorical_features.joblib'))
+        boolean_features = joblib.load(os.path.join(preprocessor_dir, 'boolean_features.joblib'))
+        cyclical_features = joblib.load(os.path.join(preprocessor_dir, 'cyclical_features.joblib'))
+        numerical_features_to_scale = joblib.load(os.path.join(preprocessor_dir, 'numerical_features_to_scale.joblib'))
+    except FileNotFoundError as e:
+        print(f"ERROR: Failed to load preprocessor files from {preprocessor_dir}. Details: {e}")
+        raise
+
+    # --- Verify Features Exist ---
+    required_features = categorical_features + boolean_features + cyclical_features + [target_column]
+    missing_cols = [col for col in required_features if col not in df_split.columns]
+    if missing_cols:
+        raise ValueError(f"DataFrame split '{split_name}' is missing required columns: {missing_cols}")
+
+    # --- 1. Process Categorical Features ---
+    print("Processing categorical features...")
+    cat_df_slice = df_split[categorical_features]
+    # Transform the whole slice
+    encoded_cats = categorical_encoder.transform(cat_df_slice) # Shape: (n_samples, n_cat_features)
+
+    # Handle unknowns (-1 -> 0, shift others +1) - Apply element-wise
+    encoded_cats[encoded_cats == -1] = 0
+    encoded_cats[encoded_cats > -1] += 1
+    categorical_data_np = encoded_cats.astype(np.int64) # Ensure correct dtype
+
+    # --- 2. Process Numerical Features (Boolean + Cyclical -> Scale) ---
+    print("Processing numerical features...")
+    # Create DataFrame for scaling in the correct order
+    numerical_df_for_scaling = pd.DataFrame(index=df_split.index)
+    # Booleans
+    for col in boolean_features:
+        numerical_df_for_scaling[col] = df_split[col].astype(float)
+    # Cyclical
+    hour = df_split['impression_hour']
+    day = df_split['impression_dayofweek']
+    numerical_df_for_scaling['hour_sin'] = np.sin(2 * np.pi * hour / 24.0)
+    numerical_df_for_scaling['hour_cos'] = np.cos(2 * np.pi * hour / 24.0)
+    numerical_df_for_scaling['day_sin'] = np.sin(2 * np.pi * day / 7.0)
+    numerical_df_for_scaling['day_cos'] = np.cos(2 * np.pi * day / 7.0)
+
+    # Ensure columns are in the order expected by the scaler
+    numerical_df_ordered = numerical_df_for_scaling[numerical_features_to_scale]
+
+    # Scale the whole slice
+    numerical_data_np = numerical_scaler.transform(numerical_df_ordered).astype(np.float32)
+
+    # --- 3. Process Target ---
+    print("Processing target variable...")
+    target_data_np = df_split[target_column].values.astype(np.float32)
+
+    # --- 4. Save Processed Arrays ---
+    cat_out_path = os.path.join(output_dir, f"{split_name}_categorical_data.npy")
+    num_out_path = os.path.join(output_dir, f"{split_name}_numerical_data.npy")
+    tgt_out_path = os.path.join(output_dir, f"{split_name}_target_data.npy")
+
+    print(f"Saving processed arrays for '{split_name}' split...")
+    np.save(cat_out_path, categorical_data_np)
+    np.save(num_out_path, numerical_data_np)
+    np.save(tgt_out_path, target_data_np)
+
+    print(f"  Categorical data saved to: {cat_out_path} (shape: {categorical_data_np.shape})")
+    print(f"  Numerical data saved to:   {num_out_path} (shape: {numerical_data_np.shape})")
+    print(f"  Target data saved to:      {tgt_out_path} (shape: {target_data_np.shape})")
+    print(f"--- Preprocessing Complete for '{split_name}' Split ---")
