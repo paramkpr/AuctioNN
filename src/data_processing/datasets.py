@@ -7,9 +7,10 @@ import warnings
 
 class AuctionDataset(Dataset):
     """
-    PyTorch Dataset for the cleaned auction data.
+    PyTorch Dataset for the cleaned auction data. Optimized for faster __getitem__.
 
-    Takes a pandas DataFrame slice (train/val/test), separates features and target,
+    Takes a pandas DataFrame slice (train/val/test), converts features to NumPy
+    arrays during initialization, separates features and target,
     and applies pre-fitted transformations (encoder, scaler) during __getitem__.
     """
     def __init__(self,
@@ -52,21 +53,22 @@ class AuctionDataset(Dataset):
         self.cyclical_features = cyclical_features
         self.numerical_features_to_scale = numerical_features_to_scale
 
-        self.target = torch.tensor(dataframe[target_column].values, dtype=torch.float32)
+        self.target_np = dataframe[target_column].values.astype(np.float32)
 
-        model_feature_columns = self.categorical_features + self.boolean_features + self.cyclical_features
+        self.cat_data_np = dataframe[self.categorical_features].values
+        self.bool_data_np = dataframe[self.boolean_features].values.astype(np.float32)
+        self.cyclical_data_np = dataframe[self.cyclical_features].values.astype(np.float32)
 
-        missing_model_features = [col for col in model_feature_columns if col not in dataframe.columns]
-        if missing_model_features:
-            raise ValueError(f"DataFrame is missing required model feature columns: {missing_model_features}")
+        self.hour_idx = self.cyclical_features.index('impression_hour')
+        self.day_idx = self.cyclical_features.index('impression_dayofweek')
 
-        self.features_df = dataframe[model_feature_columns].copy()
+        del dataframe
 
-        print(f"Dataset initialized. Number of samples: {len(self.target)}")
+        print(f"Dataset initialized. Features converted to NumPy. Number of samples: {len(self.target_np)}")
 
     def __len__(self):
         """Returns the total number of samples in the dataset."""
-        return len(self.target)
+        return len(self.target_np)
 
     def __getitem__(self, idx):
         """
@@ -84,11 +86,13 @@ class AuctionDataset(Dataset):
         if torch.is_tensor(idx):
             idx = idx.tolist()
 
-        sample_features = self.features_df.iloc[idx]
-        sample_target = self.target[idx]
+        cat_row = self.cat_data_np[idx]
+        bool_row = self.bool_data_np[idx]
+        cyclical_row = self.cyclical_data_np[idx]
+        target_sample = self.target_np[idx]
 
         # --- 1. Process Categorical Features ---
-        cat_values = sample_features[self.categorical_features].values.reshape(1, -1)
+        cat_values = cat_row.reshape(1, -1)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", category=UserWarning)
             encoded_cats = self.categorical_encoder.transform(cat_values).flatten()
@@ -96,27 +100,29 @@ class AuctionDataset(Dataset):
         # Handle unknowns (-1 -> 0, shift others +1)
         encoded_cats[encoded_cats == -1] = 0
         encoded_cats[encoded_cats > -1] += 1
-        categorical_data = torch.LongTensor(encoded_cats)
+        categorical_data = torch.from_numpy(encoded_cats).long()
 
         # --- 2. Process Numerical Features (Boolean + Cyclical -> Scale) ---
         processed_numerical = {}
-        for col in self.boolean_features:
-             processed_numerical[col] = float(sample_features[col])
+        for i, col_name in enumerate(self.boolean_features):
+            processed_numerical[col_name] = bool_row[i]
 
-        hour = sample_features['impression_hour']
-        day = sample_features['impression_dayofweek']
+        hour = cyclical_row[self.hour_idx]
+        day = cyclical_row[self.day_idx]
         processed_numerical['hour_sin'] = np.sin(2 * np.pi * hour / 24.0)
         processed_numerical['hour_cos'] = np.cos(2 * np.pi * hour / 24.0)
         processed_numerical['day_sin'] = np.sin(2 * np.pi * day / 7.0)
         processed_numerical['day_cos'] = np.cos(2 * np.pi * day / 7.0)
 
         numerical_values_ordered = [processed_numerical[col] for col in self.numerical_features_to_scale]
-        numerical_values_np = np.array(numerical_values_ordered).reshape(1, -1)
+        numerical_values_np = np.array(numerical_values_ordered, dtype=np.float32).reshape(1, -1)
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", category=UserWarning)
             scaled_numerical = self.numerical_scaler.transform(numerical_values_np).flatten()
 
-        numerical_data = torch.FloatTensor(scaled_numerical)
+        numerical_data = torch.from_numpy(scaled_numerical)
 
-        return categorical_data, numerical_data, sample_target
+        target_tensor = torch.tensor(target_sample)
+
+        return categorical_data, numerical_data, target_tensor
