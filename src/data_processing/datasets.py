@@ -3,6 +3,7 @@ from torch.utils.data import Dataset
 import pandas as pd
 import numpy as np
 from sklearn.preprocessing import OrdinalEncoder, StandardScaler
+import warnings
 
 class AuctionDataset(Dataset):
     """
@@ -87,10 +88,10 @@ class AuctionDataset(Dataset):
         sample_target = self.target[idx]
 
         # --- 1. Process Categorical Features ---
-        # Create a DataFrame with the expected column names
-        cat_df_slice = pd.DataFrame([sample_features[self.categorical_features].values], columns=self.categorical_features)
-        # Transform the DataFrame
-        encoded_cats = self.categorical_encoder.transform(cat_df_slice).flatten()
+        cat_values = sample_features[self.categorical_features].values.reshape(1, -1)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=UserWarning)
+            encoded_cats = self.categorical_encoder.transform(cat_values).flatten()
 
         # Handle unknowns (-1 -> 0, shift others +1)
         encoded_cats[encoded_cats == -1] = 0
@@ -101,7 +102,7 @@ class AuctionDataset(Dataset):
         processed_numerical = {}
         for col in self.boolean_features:
              processed_numerical[col] = float(sample_features[col])
-        # ... (cyclical transformations remain the same) ...
+
         hour = sample_features['impression_hour']
         day = sample_features['impression_dayofweek']
         processed_numerical['hour_sin'] = np.sin(2 * np.pi * hour / 24.0)
@@ -109,12 +110,13 @@ class AuctionDataset(Dataset):
         processed_numerical['day_sin'] = np.sin(2 * np.pi * day / 7.0)
         processed_numerical['day_cos'] = np.cos(2 * np.pi * day / 7.0)
 
-        # Create a DataFrame slice in the correct order with expected names
         numerical_values_ordered = [processed_numerical[col] for col in self.numerical_features_to_scale]
-        num_df_slice = pd.DataFrame([numerical_values_ordered], columns=self.numerical_features_to_scale)
+        numerical_values_np = np.array(numerical_values_ordered).reshape(1, -1)
 
-        # Scale the DataFrame
-        scaled_numerical = self.numerical_scaler.transform(num_df_slice).flatten()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=UserWarning)
+            scaled_numerical = self.numerical_scaler.transform(numerical_values_np).flatten()
+
         numerical_data = torch.FloatTensor(scaled_numerical)
 
         return categorical_data, numerical_data, sample_target
