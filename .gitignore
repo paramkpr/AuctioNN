@@ -25,3 +25,7 @@ data/clean_data.parquet
 
 # MacOS
 .DS_Store
+
+# keys
+*.pem
+keys/
