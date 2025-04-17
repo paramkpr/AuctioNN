@@ -6,7 +6,6 @@ arrow==1.3.0
 asttokens==3.0.0
 async-lru==2.0.5
 attrs==25.3.0
--e git+ssh://git@github.com/paramkpr/AuctioNN.git@028a433d94ebadc78c50b9de40395217e4d50838#egg=auctionn
 babel==2.17.0
 beautifulsoup4==4.13.3
 bleach==6.2.0

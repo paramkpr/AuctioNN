@@ -5,6 +5,7 @@ src/auctionn.egg-info/SOURCES.txt
 src/auctionn.egg-info/dependency_links.txt
 src/auctionn.egg-info/top_level.txt
 src/data_processing/__init__.py
+src/data_processing/datasets.py
 src/data_processing/preprocess.py
 src/mechanism/__init__.py
 src/mechanism/allocation.py
