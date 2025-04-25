@@ -150,3 +150,11 @@ aws --profile auctionn s3 ls s3://calpoly-artsai --human-readable --summarize --
 aws --profile auctionn s3 ls s3://calpoly-artsai/prediction_allocation_logic/ --human-readable --summarize --recursive
 aws --profile auctionn s3 cp s3://calpoly-artsai/prediction_allocation_logic/ ./data --recursive
 ```
+
+
+## Auction Model
+
+We have an online model where we have a stream of impressions from an ad exchange. 
+Our model represents a marketing company that has a group of advertisers and places bids on their behalf on the ad exchange.
+
+We have a stream of impressions and a stream of conversions.
