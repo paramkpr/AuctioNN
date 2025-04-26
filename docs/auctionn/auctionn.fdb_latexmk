@@ -1,5 +1,5 @@
 # Fdb version 4
-["bibtex auctionn"] 0 "auctionn.aux" "auctionn.bbl" "auctionn" 1745623679.43748 0
+["bibtex auctionn"] 0 "auctionn.aux" "auctionn.bbl" "auctionn" 1745623868.88449 0
   "/usr/local/texlive/2025/texmf-dist/bibtex/bst/base/plain.bst" 1292289607 20613 bd3fbfa9f64872b81ac57a0dd2ed855f ""
   "auctionn.aux" 0 -1 0 "pdflatex"
   "auctionn.bib" 0 -1 0 ""
@@ -7,8 +7,8 @@
   "auctionn.bbl"
   "auctionn.blg"
   (rewritten before read)
-["pdflatex"] 1745623678.27914 "/Users/paramkapur/projects/AuctioNN/docs/auctionn/auctionn.tex" "auctionn.pdf" "auctionn" 1745623679.43763 0
-  "/Users/paramkapur/projects/AuctioNN/docs/auctionn/auctionn.tex" 1745623660.91392 14232 183c2ed8c1433c5bcbbb1fe35a53f90b ""
+["pdflatex"] 1745623867.84925 "/Users/paramkapur/projects/AuctioNN/docs/auctionn/auctionn.tex" "auctionn.pdf" "auctionn" 1745623868.88465 0
+  "/Users/paramkapur/projects/AuctioNN/docs/auctionn/auctionn.tex" 1745623867.67301 14232 183c2ed8c1433c5bcbbb1fe35a53f90b ""
   "/usr/local/texlive/2025/texmf-dist/fonts/enc/dvips/cm-super/cm-super-ts1.enc" 1136849721 2900 1537cc8184ad1792082cd229ecc269f4 ""
   "/usr/local/texlive/2025/texmf-dist/fonts/map/fontname/texfonts.map" 1577235249 3524 cb3e574dea2d1052e39280babc910dc8 ""
   "/usr/local/texlive/2025/texmf-dist/fonts/tfm/jknappen/ec/tcrm1000.tfm" 1136768653 1536 e07581a4bb3136ece9eeb4c3ffab8233 ""
@@ -202,10 +202,10 @@
   "/usr/local/texlive/2025/texmf-var/fonts/map/pdftex/updmap/pdftex.map" 1743710176 5467155 19efa205003f9ecad95fbbaa6ff24da1 ""
   "/usr/local/texlive/2025/texmf-var/web2c/pdftex/pdflatex.fmt" 1741450574 3345740 46b66fdb0378f7bf5921b5eabf1762b8 ""
   "/usr/local/texlive/2025/texmf.cnf" 1741450484 577 418a7058ec8e006d8704f60ecd22c938 ""
-  "auctionn.aux" 1745623679.16018 3733 98bbfcaa577dce0e8303f7ad02556ce5 "pdflatex"
+  "auctionn.aux" 1745623868.61328 3733 98bbfcaa577dce0e8303f7ad02556ce5 "pdflatex"
   "auctionn.bbl" 0 -1 0 "bibtex auctionn"
-  "auctionn.out" 1745623679.16072 1806 0da304f6f43a59224ecba46a873d558a "pdflatex"
-  "auctionn.tex" 1745623660.91392 14232 183c2ed8c1433c5bcbbb1fe35a53f90b ""
+  "auctionn.out" 1745623868.61405 1806 0da304f6f43a59224ecba46a873d558a "pdflatex"
+  "auctionn.tex" 1745623867.67301 14232 183c2ed8c1433c5bcbbb1fe35a53f90b ""
   (generated)
   "auctionn.aux"
   "auctionn.log"

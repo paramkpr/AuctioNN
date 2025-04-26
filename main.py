@@ -373,6 +373,73 @@ def train(
 
 @cli.command()
 @click.option(
+    "--processed-data-dir",
+    "-d",
+    default="./data/processed_splits",
+    help="Directory containing the processed test split (.npy files).",
+    type=click.Path(exists=True, file_okay=False, readable=True)
+)
+@click.option(
+    "--preprocessor-dir",
+    "-p",
+    default="./preprocessors",
+    help="Directory containing preprocessor info (for model initialization).",
+    type=click.Path(exists=True, file_okay=False, readable=True)
+)
+@click.option(
+    "--model-path",
+    "-m",
+    default="./models/best_auction_network.pth",
+    help="Path to the saved trained model (.pth file).",
+    type=click.Path(exists=True, dir_okay=False, readable=True)
+)
+@click.option(
+    "--batch-size",
+    default=1024,
+    type=int,
+    help="Batch size for evaluation."
+)
+@click.option(
+    "--threshold",
+    default=0.5,
+    type=click.FloatRange(0.0, 1.0),
+    help="Probability threshold for calculating secondary metrics (accuracy, etc.)."
+)
+def evaluate(processed_data_dir, preprocessor_dir, model_path, batch_size, threshold):
+    """
+    Evaluate the trained model performance on the test data.
+    """
+    click.echo("--- Starting Model Evaluation ---")
+    click.echo(f"Evaluating model: {model_path}")
+    click.echo(f"Using test data from: {processed_data_dir}")
+    click.echo(f"Using preprocessor info from: {preprocessor_dir}")
+
+    try:
+        # Call the evaluation function
+        results = run_evaluation(
+            processed_data_dir=processed_data_dir,
+            preprocessor_dir=preprocessor_dir,
+            model_path=model_path,
+            batch_size=batch_size,
+            threshold=threshold
+        )
+
+        if not results:
+            click.echo("Evaluation did not produce results (e.g., test set empty).")
+        # run_evaluation already prints the metrics
+
+    except FileNotFoundError as e:
+        click.echo(f"ERROR: Required file not found. {e}", err=True)
+    except Exception as e:
+        click.echo(f"ERROR during evaluation: {e}", err=True)
+        import traceback
+        traceback.print_exc()
+
+
+
+
+@cli.command()
+@click.option(
     "--method",
     default="nn",
     type=click.Choice(["nn", "traditional"]),
