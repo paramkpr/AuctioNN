@@ -32,6 +32,11 @@ import numpy as np # Import numpy for stratification check
 from sklearn.model_selection import train_test_split # Needed for splitting
 import os # Needed for checking path writability, creating dirs
 import shutil # To potentially remove temp processing dir
+import sys # For printing to stderr and exiting
+import time # For timing the simulation
+from pathlib import Path # For path handling
+import torch # For model loading and device management
+import joblib # For loading preprocessor info for fallback model load
 
 # Import necessary functions from preprocess
 from src.data_processing.preprocess import (
@@ -43,6 +48,13 @@ from src.data_processing.preprocess import (
 # Import the training function
 from src.training.train_model import run_training # Ensure correct path
 from src.evaluation.evaluate_model import run_evaluation # <-- Import evaluation function
+
+# Import components for simulation
+from src.exchange import ImpressionGenerator, Market, OnlinePreprocessor
+from src.campaign import bootstrap_campaigns, Campaign # Import Campaign type
+from src.decision_loop import DecisionLoop
+from src.results_logger import ResultsLogger
+from src.models.network import AuctionNetwork # Used for fallback model loading
 
 @click.group()
 def cli():
@@ -214,6 +226,8 @@ def fit_preprocessors(cleaned_data_file, output_dir, test_split_ratio, val_split
          click.echo(f"ERROR: {ve}", err=True)
     except Exception as e:
         click.echo(f"ERROR during preprocessor fitting: {e}", err=True)
+        import traceback
+        traceback.print_exc() # Print traceback for detailed debugging
 
 
 @cli.command()
@@ -437,92 +451,6 @@ def evaluate(processed_data_dir, preprocessor_dir, model_path, batch_size, thres
 
 
 
-
-@cli.command()
-@click.option(
-    "--method",
-    default="nn",
-    type=click.Choice(["nn", "traditional"]),
-    help="Allocation method to use",
-)
-def allocate(method):
-    """
-    Run the allocation mechanism using a specified method.
-    Methods:
-      - nn: Use the trained neural network's predictions
-      - traditional: Use a baseline (e.g., second-price auction)
-    """
-    click.echo(f"Allocating impressions using {method} allocation method...")
-    # TODO: call allocation mechanism here
-    click.echo(f"(Placeholder) Allocation process complete using {method}.")
-
-
-@cli.command()
-@click.option(
-    "--processed-data-dir",
-    "-d",
-    default="./data/processed_splits",
-    help="Directory containing the processed test split (.npy files).",
-    type=click.Path(exists=True, file_okay=False, readable=True)
-)
-@click.option(
-    "--preprocessor-dir",
-    "-p",
-    default="./preprocessors",
-    help="Directory containing preprocessor info (for model initialization).",
-    type=click.Path(exists=True, file_okay=False, readable=True)
-)
-@click.option(
-    "--model-path",
-    "-m",
-    default="./models/best_auction_network.pth",
-    help="Path to the saved trained model (.pth file).",
-    type=click.Path(exists=True, dir_okay=False, readable=True)
-)
-@click.option(
-    "--batch-size",
-    default=1024,
-    type=int,
-    help="Batch size for evaluation."
-)
-@click.option(
-    "--threshold",
-    default=0.5,
-    type=click.FloatRange(0.0, 1.0),
-    help="Probability threshold for calculating secondary metrics (accuracy, etc.)."
-)
-def evaluate(processed_data_dir, preprocessor_dir, model_path, batch_size, threshold):
-    """
-    Evaluate the trained model performance on the test data.
-    """
-    click.echo("--- Starting Model Evaluation ---")
-    click.echo(f" Evaluating model: {model_path}")
-    click.echo(f" Using test data from: {processed_data_dir}")
-    click.echo(f" Using preprocessor info from: {preprocessor_dir}")
-
-    try:
-        # Call the evaluation function
-        results = run_evaluation(
-            processed_data_dir=processed_data_dir,
-            preprocessor_dir=preprocessor_dir,
-            model_path=model_path,
-            batch_size=batch_size,
-            threshold=threshold
-            # device=None will auto-detect
-        )
-
-        if not results:
-             click.echo("Evaluation did not produce results (e.g., test set empty).")
-        # run_evaluation already prints the metrics
-
-    except FileNotFoundError as e:
-        click.echo(f"ERROR: Required file not found. {e}", err=True)
-    except Exception as e:
-        click.echo(f"ERROR during evaluation: {e}", err=True)
-        import traceback
-        traceback.print_exc()
-
-
 @cli.command()
 @click.pass_context
 def help(ctx):
@@ -530,6 +458,266 @@ def help(ctx):
     Show help message and list commands.
     """
     click.echo(ctx.parent.get_help())
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Helper function for model loading (adapting from run_sim.py)
+# ──────────────────────────────────────────────────────────────────────────────
+def _load_model_for_sim(
+    model_path: Path,
+    preprocessor_dir: Path,
+    device: torch.device
+) -> torch.nn.Module:
+    """
+    Loads the model for simulation. Tries TorchScript first, then falls back
+    to loading a state_dict for AuctionNetwork.
+
+    Args:
+        model_path: Path to the model file (.pth or .pt).
+        preprocessor_dir: Path to the preprocessor directory (needed for fallback).
+        device: The torch device to load the model onto.
+
+    Returns:
+        The loaded model, set to evaluation mode.
+
+    Raises:
+        FileNotFoundError: If preprocessor files needed for fallback are missing.
+        Exception: If loading fails for other reasons.
+    """
+    try:
+        # Try loading as TorchScript first
+        model = torch.jit.load(model_path, map_location=device).eval()
+        click.echo(f"Loaded TorchScript model from {model_path}")
+        return model
+    except (RuntimeError, torch.jit.frontend.NotSupportedError, FileNotFoundError):
+        # If TorchScript fails, assume it's a state_dict for AuctionNetwork
+        click.echo(f"TorchScript load failed for {model_path}, attempting state_dict load for AuctionNetwork...")
+        try:
+            # Load necessary preprocessor info for AuctionNetwork initialization
+            category_sizes_path = preprocessor_dir / 'category_sizes.joblib'
+            numerical_features_path = preprocessor_dir / 'numerical_features_to_scale.joblib'
+
+            if not category_sizes_path.exists() or not numerical_features_path.exists():
+                raise FileNotFoundError(
+                    f"Required preprocessor files for fallback model load not found in {preprocessor_dir} "
+                    "(need 'category_sizes.joblib' and 'numerical_features_to_scale.joblib')"
+                )
+
+            category_sizes = joblib.load(category_sizes_path)
+            numerical_features_to_scale = joblib.load(numerical_features_path)
+            num_numerical_features = len(numerical_features_to_scale)
+
+            # TODO: Make embedding_dim, hidden_dims, dropout_rate configurable or load from config?
+            # Using defaults from train_model.py for now.
+            embedding_dim = 32
+            hidden_dims = [128, 64]
+            dropout_rate = 0.3
+
+            model = AuctionNetwork(
+                category_sizes=category_sizes,
+                num_numerical_features=num_numerical_features,
+                embedding_dim=embedding_dim,
+                hidden_dims=hidden_dims,
+                dropout_rate=dropout_rate # Set dropout low/zero for eval? Usually handled by model.eval()
+            )
+            state_dict = torch.load(model_path, map_location=device)
+            # Handle potential DataParallel prefix
+            if list(state_dict.keys())[0].startswith('module.'):
+                state_dict = {k[len('module.'):]: v for k, v in state_dict.items()}
+            model.load_state_dict(state_dict)
+            model.to(device).eval()
+            click.echo(f"Loaded state_dict into AuctionNetwork from {model_path}")
+            return model
+        except FileNotFoundError as fnf_err:
+             click.echo(f"ERROR during fallback model load: {fnf_err}", err=True)
+             raise # Reraise the specific error
+        except Exception as e:
+            click.echo(f"ERROR: Failed to load model state_dict from {model_path}. Error: {e}", err=True)
+            raise # Reraise the exception
+
+
+@cli.command()
+@click.option(
+    "--data",
+    "-d",
+    default="data/processed/clean_data.parquet", # Adjusted default to align with preprocess output
+    help="Parquet file containing impression features.",
+    type=click.Path(exists=True, dir_okay=False, readable=True, path_type=Path)
+)
+@click.option(
+    "--model",
+    "-m",
+    default="models/best_auction_network.pth", # Adjusted default to align with train output
+    help="Path to the trained model (TorchScript .pt or state_dict .pth).",
+    type=click.Path(exists=True, dir_okay=False, readable=True, path_type=Path)
+)
+@click.option(
+    "--preproc",
+    "-p",
+    default="preprocessors/",
+    help="Directory holding the fitted preprocessors.",
+    type=click.Path(exists=True, file_okay=False, readable=True, path_type=Path)
+)
+@click.option(
+    "--out",
+    "-o",
+    default="runs/simulation_results.parquet",
+    help="Destination Parquet file for impression-level logs.",
+    type=click.Path(dir_okay=False, writable=True, path_type=Path)
+)
+@click.option(
+    "--num-imps",
+    type=int,
+    default=None,
+    help="Number of impressions to simulate (None = all in data file)."
+)
+@click.option(
+    "--num-users",
+    type=int,
+    default=10_000,
+    help="Number of users to simulate (None = all in data file)."
+)
+@click.option(
+    "--beta",
+    type=float,
+    default=1.0,
+    help="Bid-shading factor β for first-price auction (1.0 = no shading)."
+)
+@click.option(
+    "--tau",
+    type=int,
+    default=3,
+    help="Per-user ad-stock cap τ (max impressions per user per campaign)."
+)
+@click.option(
+    "--device",
+    type=click.Choice(["cpu", "cuda", "mps", "auto"], case_sensitive=False),
+    default="auto",
+    help="Device for NN inference ('auto' selects best available)."
+)
+@click.option(
+    "--flush-every",
+    type=int,
+    default=20_000,
+    help="Number of log rows to buffer before flushing to Parquet."
+)
+@click.option(
+    "--seed",
+    type=int,
+    default=42,
+    help="Global RNG seed for reproducibility."
+)
+def simulate(data, model, preproc, out, num_imps, num_users, beta, tau, device, flush_every, seed):
+    """
+    Run the offline ad allocation simulation using a trained model.
+
+    Streams impressions from the DATA file, uses the MODEL and PREPROC info
+    to make bidding decisions via the DecisionLoop, simulates the market,
+    updates campaign states, and logs results to the OUT file.
+    """
+    click.echo("--- Starting Offline Simulation ---")
+
+    # 0. Setup: Device, Output Dir, Seed
+    if device == "auto":
+        resolved_device_str = (
+            "cuda" if torch.cuda.is_available()
+            else "mps" if torch.backends.mps.is_available()
+            else "cpu"
+        )
+    else:
+        resolved_device_str = device
+    torch_device = torch.device(resolved_device_str)
+    click.echo(f"Using device: {torch_device}")
+
+    # Ensure output directory exists
+    os.makedirs(out.parent, exist_ok=True)
+    click.echo(f"Setting random seed: {seed}")
+    np.random.seed(seed) # Seed numpy for Market and ImpressionGenerator shuffling
+    torch.manual_seed(seed)
+    if resolved_device_str == "cuda":
+        torch.cuda.manual_seed_all(seed)
+
+    logger = None # Initialize logger to None for graceful shutdown
+    try:
+        # 1. Instantiate building blocks
+        click.echo(f"Loading impression data from: {data}")
+        gen = ImpressionGenerator(data, seed=seed, num_users=num_users)
+
+        click.echo(f"Loading online preprocessor from: {preproc}")
+        online_preprocessor = OnlinePreprocessor(preproc)
+
+        click.echo("Initializing market simulation...")
+        market = Market(seed=seed) # Pass seed here
+
+        click.echo(f"Bootstrapping campaigns using data from: {data}")
+        campaigns = bootstrap_campaigns(clean_data_path=data, seed=seed) # Pass seed
+        if not campaigns:
+            click.echo("ERROR: No campaigns were bootstrapped. Check the data file.", err=True)
+            return
+
+        click.echo(f"Setting up results logger to: {out}")
+        logger = ResultsLogger(out, flush_every=flush_every)
+
+        click.echo(f"Loading model from: {model}")
+        nn_model = _load_model_for_sim(model, preproc, torch_device)
+
+        click.echo("Initializing decision loop...")
+        loop = DecisionLoop(model=nn_model,
+                            campaigns=campaigns,
+                            preproc=online_preprocessor,
+                            market=market,
+                            logger=logger,
+                            beta=beta,
+                            tau=tau,
+                            device=torch_device) # Pass torch device object
+
+        # 2. Stream impressions
+        click.echo(f"Starting impression stream (limit: {'all' if num_imps is None else f'{num_imps:,}'})...")
+        t0 = time.perf_counter()
+        processed_count = 0
+        for i, imp in enumerate(gen.stream(shuffle=True), start=1):
+            if num_imps and i > num_imps:
+                break
+            loop.process(imp)
+            processed_count = i
+            if i % (num_imps / 10) == 0:
+                 # Calculate current total spent for reporting
+                 spent = sum(c_init.budget_remaining - c_loop.budget_remaining
+                             for c_init, c_loop in zip(bootstrap_campaigns(data, seed), loop.campaigns.values()))
+                 remaining_avg = sum(c.budget_remaining for c in loop.campaigns.values()) / len(campaigns)
+                 print(f"\rProcessed {i:,} imps | Spent: ${spent:,.2f} | Avg Rem: ${remaining_avg:,.2f} | Elapsed: {time.perf_counter()-t0:,.1f}s", end="")
+
+        if logger:
+            logger.close() # Ensure final flush
+
+        # 3. Final stats
+        elapsed = time.perf_counter() - t0
+        imps_per_sec = processed_count / elapsed if elapsed > 0 else 0
+        final_spent = sum(c_init.budget_remaining - c_loop.budget_remaining
+                           for c_init, c_loop in zip(bootstrap_campaigns(data, seed), loop.campaigns.values()))
+        final_remaining = sum(c.budget_remaining for c in loop.campaigns.values())
+
+        print(f"""
+ 
+ --- Simulation Complete ---
+ Processed {processed_count:,} impressions in {elapsed:,.1f}s ({imps_per_sec:,.0f} imps/sec).
+ Total budget spent: ${final_spent:,.2f}
+ Total budget remaining: ${final_remaining:,.2f}
+ Results logged to: {out}
+ """)
+
+    except FileNotFoundError as e:
+        click.echo(f"\nERROR: Required file not found. {e}", err=True)
+        if logger: logger.close() # Attempt cleanup
+    except KeyboardInterrupt:
+         print("Simulation interrupted by user. Flushing logs...", file=sys.stderr)
+         if logger: logger.close() # Attempt cleanup
+         sys.exit(1) # Exit with error code
+    except Exception as e:
+        click.echo(f"\nERROR during simulation: {e}", err=True)
+        import traceback
+        traceback.print_exc()
+        if logger: logger.close() # Attempt cleanup
 
 
 if __name__ == "__main__":

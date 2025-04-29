@@ -1,3 +1,13 @@
+"""
+exchange.py
+This module simulates an external ad exchange that the core decision loop interacts with.
+
+The external ad exchange is responsible for two things:
+- Generating a stream of bid-requests (impression features) 
+- Setting the market price for each bid-request
+    - Subsequently, deciding if the bid amount from the decision loop wins or not
+"""
+
 from dataclasses import dataclass
 import os
 import joblib
@@ -10,14 +20,6 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pandas as pd
 
-"""
-This module simulates an external ad exchange that the core decision loop interacts with.
-
-The external ad exchange is responsible for two things:
-- Generating a stream of bid-requests (impression features) 
-- Setting the market price for each bid-request
-    - Subsequently, deciding if the bid amount from the decision loop wins or not
-"""
 
 @dataclass(slots=True, frozen=True)
 class Impression:
@@ -38,10 +40,12 @@ class ImpressionGenerator:
         self,
         parquet_path: str | Path,
         seed: int | None = 42,
+        num_users: int | None = None, # number of users the market provides
     ) -> None:
         self._pf = pq.ParquetFile(parquet_path)
         self._num_rows = self._pf.metadata.num_rows
         self._rng = np.random.default_rng(seed)
+        self._num_users = num_users
 
     # –– public –––––––––––––––––––––––––––––––––––––––––––––––––––––––
     def stream(
@@ -80,6 +84,9 @@ class ImpressionGenerator:
             # Convert single-value lists → scalars
             features = {k: v[0] for k, v in row.items() if k not in {"campaign_id"}}
 
+            # assigns a user_id to the impression
+            features["user_id"] = self._rng.choice(range(self._num_users), size=1, replace=True)[0]
+
             yield Impression(
                 features=features,
             )
@@ -101,6 +108,7 @@ class ImpressionGenerator:
         return rg_idx, offset
 
 
+# TODO: Refacor this into a 'Network' class maybe? or figure out a better place for it.
 class OnlinePreprocessor:
     """
     Re-creates the *same* transformations done in `apply_preprocessors_to_split.py`.
@@ -178,11 +186,38 @@ class OnlinePreprocessor:
         return (categorical_tensor, numerical_tensor, target_tensor)
 
 
-gen = ImpressionGenerator(parquet_path="./data/clean_data.parquet")
-preprocessor = OnlinePreprocessor(preprocessor_dir="./preprocessors")
+class Market:
+    """
+    Simulates the actual external ad exchange market. 
+    - Samples a market price for each bid-request / impression.
+    - Provides a 'simulate' method that, given bid amount; impression; and campaign, 
+        returns the result of the auction.
+    """
 
-for impression in gen.stream():
-    print(impression)
-    cat, num, target = preprocessor(impression, "campaign_id")
-    print(cat, num, target)
-    break
+    def __init__(self, median_cpm: float = 1.8, # $1.8 CPM = $0.0018 per impression
+                 sigma: float = 0.5,  # log-normal distribution sigma
+                 seed: int = 42,  # random seed for reproducibility
+                 ) -> None:
+        self._median = median_cpm / 1000.0      # convert CPM → per-imp $
+        self._sigma = sigma
+        self._rng = np.random.default_rng(seed)
+
+    def _sample_price(self) -> float:
+        """
+        Sample a price from a log-normal distribution with the given median and sigma.
+        """
+        mu = np.log(self._median)
+        return float(self._rng.lognormal(mean=mu, sigma=self._sigma))
+    
+    def simulate(self, bid_amount: float) -> bool:
+        """
+        Simulates the market price and returns the market price and the result of the auction.
+
+        Args:
+            bid_amount: The amount the decision loop is bidding.
+
+        Returns:
+            A tuple of (market_price, result).
+        """
+        market_price = self._sample_price()
+        return market_price, bid_amount > market_price
