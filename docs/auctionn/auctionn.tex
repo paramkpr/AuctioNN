@@ -159,22 +159,22 @@ Table~\ref{tab:variables} formalizes the symbols used throughout the paper.
     \hline \\
     $I_t$ & Impression delivered at discrete time~$t$. \\
     $\mathrm{features}(I_t)$ & All metadata included in the bid request. \\
-    $C$ & Active campaign set. \\
-    $c \in C$ & One specific campaign. \\
+    $C$ & Active campaign set. $c \in C$ is one specific campaign. \\
     $\mathrm{budget\_remaining}[c]$ & Dollars left for campaign~$c$. \\
     $p_{\mathrm{conv}}(c,I_t)$ & Predicted conversion probability
     if~$c$ wins~$I_t$. \\
     $\mathrm{value\_per\_conv}[c]$ & Advertiser-declared value of one
     conversion. \\
     $\mathrm{target\_CPA}[c]$ & Optional maximum CPA for campaign~$c$. \\
-    $\mathrm{ad\_stock}[\text{user},c]$ & Recent exposure score
+    $\mathrm{ad\_stock}[\text{user},c]$ or $\tau$ & Recent exposure score
     (models ad fatigue). \\
     $\mathrm{score}(c,I_t)$ & Scalar used to select the winning campaign. \\
     $\mathrm{bid}$ & Dollar price sent to the exchange. \\
+    $\beta$ & Bid shading factor (initially 1.0). \\
     $\mathrm{clearing\_price}$ & Amount paid if the bid wins
     ($=\mathrm{bid}$ in first-price). \\
     $\mathrm{marginal\;CPA}$ & $\Delta\text{Spend} /
-    \Delta\text{Conversions}$ over a window.\\
+    \Delta\text{Conversions}$ over a window.\\ 
   \end{tabular}
 \end{table}
 
