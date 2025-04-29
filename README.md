@@ -26,26 +26,43 @@ python main.py fit-preprocessors --cleaned-data-file data/processed/clean_data.p
     --output-dir ./preprocessors
 ```
 
-### Training (WIP)
+### Training
 The `train` command trains the neural network model on the cleaned data using the preprocessors.
 ```bash
-python main.py train --data-path data/processed/clean_data.parquet \
-    --preprocessor-dir ./preprocessors
+python main.py train \
+    -d data/clean_data.parquet \
+    -p ./preprocessors \
+    -o ./data/processed_splits \
+    -s ./models/best_model.pth \
+    --epochs 10 \
+    --batch-size 2048 \
+    --test-split-ratio 0.15 \
+    --val-split-ratio 0.15 \
 ```
 
-### Allocating (WIP)
+### Evaluating 
+The `evaluate` command evaluates the performance of the model on the test split of the data.
+```bash
+python main.py evaluate -d ./data/processed_splits -p ./preprocessors -m ./models/best_model.pth
+```
+
+### Simulate
 The `allocate` command runs the allocation mechanism using the trained model.
 ```bash
-python main.py allocate --model-path ./models/neural_net.pth \
-    --data-path data/processed/clean_data.parquet \
-    --output-dir ./allocations
+python main.py simulate \
+  --data data/clean_data.parquet \
+  --model models/best_model.pth \
+  --preproc preprocessors/ \
+  --out runs/simulation_results.parquet \
+  --num-imps 1000 \
+  --num-users 100 \
+  --device auto
 ```
 
-### Evaluating (WIP)
-The `evaluate` command evaluates the performance of the allocation mechanism.
+### Analyze (WIP)
+The `analyze` command analyzes the results of the allocation mechanism.
 ```bash
-python main.py evaluate --data-path data/processed/clean_data.parquet \
-    --output-dir ./evaluations
+python main.py analyze -d ./runs/simulation_results.parquet
 ```
 
 ---
