@@ -166,6 +166,16 @@ aws configure
 aws --profile auctionn s3 ls s3://calpoly-artsai --human-readable --summarize --recursive
 aws --profile auctionn s3 ls s3://calpoly-artsai/prediction_allocation_logic/ --human-readable --summarize --recursive
 aws --profile auctionn s3 cp s3://calpoly-artsai/prediction_allocation_logic/ ./data --recursive
+aws --profile auctionn s3 cp s3://calpoly-artsai/prediction_allocation_logic/snapshot_20250429/ ./data/snapshot_20250429 --recursive
+
+aws --profile auctionn s3 ls s3://calpoly-artsai/prediction_allocation_logic/snapshot_20250429/ --human-readable --summarize --recursive
+
+
+aws --profile auctionn \
+     s3 sync s3://calpoly-artsai/prediction_allocation_logic/snapshot_20250429/ \
+            ./data/snapshot_20250429 \
+     --exact-timestamps --no-progress 
+
 ```
 
 
