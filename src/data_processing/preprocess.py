@@ -6,14 +6,18 @@ on a sample, apply preprocessors to the full dataset, and save the results.
 Main orchestration should happen outside these functions, potentially in a
 main script or notebook, calling these functions in sequence.
 """
-import math
+import re
 import os
 import glob # For finding files
 import joblib
 import pandas as pd
 import numpy as np
+import dask
+from dask import delayed
+from dask.distributed import wait
+from dask.diagnostics import ProgressBar
+from dask.dataframe.utils import make_meta
 import dask.dataframe as dd
-from dask.diagnostics import ProgressBar # For progress on compute()
 from user_agents import parse
 from tqdm import tqdm # tqdm can be used with Dask diagnostics or for pandas operations
 from sklearn.preprocessing import StandardScaler, OrdinalEncoder
@@ -22,6 +26,21 @@ from sklearn.preprocessing import StandardScaler, OrdinalEncoder
 pd.set_option('display.max_columns', None)
 pd.set_option('display.max_rows', 100)
 pd.set_option('display.width', 1000)
+
+
+dask.config.set({
+    # --- worker RAM management ---
+    "distributed.worker.memory.target"   : 0.45,   # start spilling early
+    "distributed.worker.memory.spill"    : 0.55,
+    "distributed.worker.memory.pause"    : 0.80,
+    "distributed.worker.memory.terminate": 0.95,
+    "shuffle.split_out": 32,
+    "distributed.worker.memory.spill-compression": "auto",   # lz4/snappy if available
+
+
+    # --- keep big shuffles on disk, not in RAM ---
+    "dataframe.shuffle.method": "p2p",            # options: "disk", "tasks", "p2p"
+})
 
 # --- User Agent Parsing Helper (Used by map_partitions) ---
 
@@ -62,142 +81,108 @@ def parse_ua_chunk(ua_series_chunk: pd.Series) -> pd.DataFrame:
 
 # --- Dask-based Data Cleaning and Merging ---
 
+# ──────────────────────────────────────────────────────────────────────────────
+#  define_dask_cleaning_graph  –  campaign-aware version
+# ──────────────────────────────────────────────────────────────────────────────
+
+# ────────────────────────────────────────────────────────────────
 def define_dask_cleaning_graph(
     impressions_path: str,
     conversions_path: str,
-    impression_cols_needed: list[str] = ['unique_id', 'dttm_utc', 'cxnn_type', 'user_agent', 'dma', 'country', 'prizm_premier_code', 'device_type', 'campaign_id'],
-    conversion_cols_needed: list[str] = ['imp_click_unique_id', 'conv_dttm_utc']
+
+    impression_cols_needed: list[str],
+    conversion_cols_needed: list[str] = [
+        "imp_click_unique_id", "imp_click_campaign_id", "conv_dttm_utc",
+    ],
+    split: tuple[float] = (0.8, 0.1, 0.1),
+    out_base: str = './data/merged',
+    seed: int = 42
 ) -> dd.DataFrame:
-    """
-    Defines the Dask computation graph for loading, cleaning, merging,
-    and feature engineering the impression and conversion data.
 
-    Args:
-        impressions_path: Path to the impressions parquet dataset directory.
-        conversions_path: Path to the conversions parquet dataset directory.
-        impression_cols_needed: List of columns required from the impressions dataset
-                                (include merge keys, features for cleaning/engineering).
-        conversion_cols_needed: List of columns required from the conversions dataset.
+    print("Defining campaign-aware graph (delayed→from_delayed)…")
 
-    Returns:
-        A Dask DataFrame representing the final merged and cleaned data graph.
-        Computation is NOT executed yet.
-    """
-    print("Defining Dask computation graph...")
-    print("Reading datasets lazily...")
-    ddf_impressions = dd.read_parquet(impressions_path)
-    ddf_conversions = dd.read_parquet(conversions_path)
-
-    # --- Initial Cleaning & Column Selection ---
-    print("Dropping AIP columns...")
-    aip_imp_cols = [col for col in ddf_impressions.columns if col.startswith('aip')]
-    aip_conv_cols = [col for col in ddf_conversions.columns if col.startswith('aip')]
-    if aip_imp_cols:
-        ddf_impressions = ddf_impressions.drop(columns=aip_imp_cols)
-    if aip_conv_cols:
-        ddf_conversions = ddf_conversions.drop(columns=aip_conv_cols)
-
-    print("Selecting necessary columns before merge...")
-    # Ensure merge key 'unique_id' is included if not explicitly listed
-    if 'unique_id' not in impression_cols_needed and 'unique_id' in ddf_impressions.columns:
-         impression_cols_needed = ['unique_id'] + impression_cols_needed
-    # Filter to columns that actually exist
-    impression_cols_to_select = [col for col in impression_cols_needed if col in ddf_impressions.columns]
-    conversion_cols_to_select = [col for col in conversion_cols_needed if col in ddf_conversions.columns]
-
-    if 'unique_id' not in impression_cols_to_select:
-         raise ValueError("'unique_id' column is required in impressions for merging but is missing or not selected.")
-    if 'imp_click_unique_id' not in conversion_cols_to_select:
-        raise ValueError("'imp_click_unique_id' column is required in conversions for merging but is missing or not selected.")
-
-    ddf_impressions_subset = ddf_impressions[impression_cols_to_select]
-    ddf_conversions_subset = ddf_conversions[conversion_cols_to_select]
-
-    # --- Merge ---
-    print("Defining merge operation...")
-    ddf_merged = dd.merge(
-        ddf_impressions_subset,
-        ddf_conversions_subset,
-        left_on='unique_id',
-        right_on='imp_click_unique_id',
-        how='left'
+    # 0️⃣  discover campaign folders on the conversion side
+    conv_ids = sorted(
+        int(re.search(r"\d+", name).group())
+        for name in os.listdir(conversions_path)
+        if name.startswith("imp_click_campaign_id=")
     )
+    # cut off from 17562
+    conv_ids = conv_ids[conv_ids.index(47589):]
+    print(f"Found {len(conv_ids)} campaign partitions")
 
-    # --- Post-Merge Cleaning and Feature Engineering ---
-    print("Defining post-merge cleaning and feature engineering...")
-    # Conversion flag
-    if 'conv_dttm_utc' in ddf_merged.columns:
-        ddf_merged['conversion_flag'] = (~ddf_merged['conv_dttm_utc'].isnull()).astype(int)
-    else:
-        # Handle case where conversion time column wasn't loaded/doesn't exist
-        raise ValueError("'conv_dttm_utc' not found. Cannot create 'conversion_flag'.")
-
-    # Drop redundant key and rename time column
-    cols_to_drop = ['imp_click_unique_id']
-    ddf_merged = ddf_merged.drop(columns=[col for col in cols_to_drop if col in ddf_merged.columns])
-    if 'dttm_utc' in ddf_merged.columns:
-        ddf_merged = ddf_merged.rename(columns={'dttm_utc': 'impression_dttm_utc'})
-
-    # Handle missing values
-    # Example: Ensure these columns are handled even if not used later
-    cols_to_fill_unknown = ['prizm_premier_code', 'device_type', 'goal_name']
-    for col in cols_to_fill_unknown:
-        if col in ddf_merged.columns:
-            ddf_merged[col] = ddf_merged[col].fillna('Unknown')
-
-    # --- User Agent Parsing ---
-    if 'user_agent' in ddf_merged.columns:
-        print("Defining User Agent parsing using map_partitions...")
-        ua_series = ddf_merged['user_agent'].fillna('') # Fill NaNs before processing
-
-        # Define the exact structure returned by parse_ua_chunk
-        meta_ua = pd.DataFrame({
-            'ua_browser': pd.Series(dtype='object'), 'ua_os': pd.Series(dtype='object'),
-            'ua_device_family': pd.Series(dtype='object'), 'ua_device_brand': pd.Series(dtype='object'),
-            'ua_is_mobile': pd.Series(dtype='bool'), 'ua_is_tablet': pd.Series(dtype='bool'),
-            'ua_is_pc': pd.Series(dtype='bool'), 'ua_is_bot': pd.Series(dtype='bool')
-        }, index=pd.Index([], dtype='int64')) # Use correct index type if known
-
-        ua_features_ddf = ua_series.map_partitions(parse_ua_chunk, meta=meta_ua)
-
-        # Drop original UA string and concat features
-        ddf_merged = ddf_merged.drop(columns=['user_agent'])
-        ddf_merged = dd.concat([ddf_merged, ua_features_ddf], axis=1)
-    else:
-        print("Skipping User Agent parsing - 'user_agent' column not found or selected.")
-
-    # --- Temporal Features ---
-    if 'impression_dttm_utc' in ddf_merged.columns:
-        print("Defining temporal feature creation...")
-        # Ensure it's datetime - use errors='coerce' for robustness
-        ddf_merged['impression_dttm_utc'] = dd.to_datetime(ddf_merged['impression_dttm_utc'], errors='coerce')
-        # Check for NaT values after coercion if strictness is needed
-        ddf_merged['impression_hour'] = ddf_merged['impression_dttm_utc'].dt.hour
-        ddf_merged['impression_dayofweek'] = ddf_merged['impression_dttm_utc'].dt.dayofweek
-    else:
-        print("Skipping temporal features - 'impression_dttm_utc' column not found.")
-
-    # --- Final Type Casting (Example) ---
-    # Ensure types are correct before saving / further processing
-    print("Defining final type casting...")
-    dtype_map = {
-        'ua_is_mobile': 'bool', 'ua_is_tablet': 'bool', 'ua_is_pc': 'bool', 'ua_is_bot': 'bool',
-        'impression_hour': 'Int32', # Use nullable Int if NaNs possible
-        'impression_dayofweek': 'Int32',
-        'conversion_flag': 'int8'
-        # Add other columns as needed
+    # 1️ meta template (empty DF with correct dtypes)
+    meta_cols = {
+        "campaign_id"          : "int64",
+        "unique_id"            : "int64",
+        "dttm_utc"             : "datetime64[ns]",
+        "cxnn_type"            : "object",
+        "user_agent"           : "object",
+        "dma"                  : "object",
+        "country"              : "object",
+        "prizm_premier_code"   : "object",
+        "device_type"          : "object",
+        "conv_dttm_utc"        : "datetime64[ns]",
+        "conversion_flag"      : "int8",
+        "impression_hour"      : "Int32",
+        "impression_dayofweek" : "Int32",
     }
-    for col, dtype in dtype_map.items():
-        if col in ddf_merged.columns:
-            try:
-                 # Allow errors during casting if a column might have mixed types unexpectedly
-                 ddf_merged[col] = ddf_merged[col].astype(dtype, errors='ignore')
-            except TypeError as e:
-                 print(f"Warning: Could not cast column '{col}' to {dtype}. Error: {e}. Check data or meta definitions.")
+    _meta = make_meta(meta_cols)
+
+    # 2️  delayed loader that **returns pandas**
+    def load_merge_one(cid: int) -> pd.DataFrame:
+        imp = dd.read_parquet(
+            impressions_path,
+            columns=impression_cols_needed,
+            filters=[("campaign_id", "==", cid)],
+            split_row_groups=True,
+            chunksize="64MB",
+        )
+        conv = dd.read_parquet(
+            conversions_path,
+            columns=conversion_cols_needed,
+            filters=[("imp_click_campaign_id", "==", cid)],
+            split_row_groups=True,
+            chunksize="64MB",
+        )
+
+        # normalise dtypes for the join keys
+        imp  = imp.astype({"campaign_id": "int64"})
+        conv = conv.astype({"imp_click_campaign_id": "int64"})
+
+        merged = (
+            dd.merge(
+                imp,
+                conv,
+                left_on = ["campaign_id", "unique_id"],
+                right_on= ["imp_click_campaign_id", "imp_click_unique_id"],
+                how="left",
+                # _meta=_meta
+            )
+            .drop(columns=["imp_click_campaign_id", "imp_click_unique_id"])
+        )
+
+        # feature engineering inside the graph
+        merged["conversion_flag"] = (~merged.conv_dttm_utc.isnull()).astype("int8")
+        merged = merged.rename(columns={"dttm_utc": "impression_dttm_utc"})
+        merged["impression_dttm_utc"] = dd.to_datetime(
+            merged.impression_dttm_utc, errors="coerce"
+        )
+        merged["impression_hour"]      = merged.impression_dttm_utc.dt.hour.astype("Int32")
+        merged["impression_dayofweek"] = merged.impression_dttm_utc.dt.dayofweek.astype("Int32")
+
+        # persist as pandas so only *one* object per campaign enters the graph
+        train, val, test = merged.random_split(split, random_state=seed + cid)
+
+        train.to_parquet(f"{out_base}/train/campaign_id={cid}", write_index=False, overwrite=True, compute=True)
+        val.to_parquet(  f"{out_base}/val/campaign_id={cid}",   write_index=False, overwrite=True, compute=True)
+        test.to_parquet( f"{out_base}/test/campaign_id={cid}",  write_index=False, overwrite=True, compute=True)
+        return len(merged)
+
+    return[load_merge_one(cid) for cid in conv_ids]
 
 
-    print("Dask graph definition complete.")
-    return ddf_merged
+
 
 
 def execute_graph_and_split_save(
@@ -238,22 +223,63 @@ def execute_graph_and_split_save(
 
     # Execute the computation and save
     print("Triggering computation and saving train split...")
-    with ProgressBar():
-        dd.to_parquet(ddf_train, train_path, write_index=False, overwrite=True, compute=True)
+    dd.to_parquet(ddf_train, train_path, write_index=False, overwrite=True, compute=True, write_metadata_file=False)
     print("Computation and saving train split complete.")
 
     print("Triggering computation and saving validation split...")
-    with ProgressBar():
-         dd.to_parquet(ddf_val, val_path, write_index=False, overwrite=True, compute=True)
+    dd.to_parquet(ddf_val, val_path, write_index=False, overwrite=True, compute=True, write_metadata_file=False)
     print("Computation and saving validation split complete.")
 
     print("Triggering computation and saving test split...")
-    with ProgressBar():
-         dd.to_parquet(ddf_test, test_path, write_index=False, overwrite=True, compute=True)
+    dd.to_parquet(ddf_test, test_path, write_index=False, overwrite=True, compute=True, write_metadata_file=False)
     print("Computation and saving test split complete.")
 
     print("--- Data Saving Complete ---")
     return train_path, val_path, test_path
+
+
+def add_user_agent_features(
+    input_ddf: dd.DataFrame # The Dask DataFrame read from Stage 1 output
+    ) -> dd.DataFrame:
+    """
+    STAGE 2 GRAPH: Takes a Dask DataFrame (result of Stage 1), adds User Agent
+    features using map_partitions, and returns the new Dask DataFrame graph.
+    Assumes 'user_agent' column exists in input_ddf.
+    """
+    print("STAGE 2: Defining User Agent parsing graph...")
+    ddf_with_ua = input_ddf # Start with the input dataframe
+
+    if 'user_agent' in ddf_with_ua.columns:
+        ua_series = ddf_with_ua['user_agent'].fillna('')
+
+        meta_ua = pd.DataFrame({ # Define the structure returned by parse_ua_chunk
+            'ua_browser': pd.Series(dtype='object'), 'ua_os': pd.Series(dtype='object'),
+            'ua_device_family': pd.Series(dtype='object'), 'ua_device_brand': pd.Series(dtype='object'),
+            'ua_is_mobile': pd.Series(dtype='bool'), 'ua_is_tablet': pd.Series(dtype='bool'),
+            'ua_is_pc': pd.Series(dtype='bool'), 'ua_is_bot': pd.Series(dtype='bool')
+        }, index=pd.Index([], dtype='int64'))
+
+        ua_features_ddf = ua_series.map_partitions(parse_ua_chunk, meta=meta_ua)
+
+        # Drop original UA string and concat features
+        ddf_with_ua = ddf_with_ua.drop(columns=['user_agent'])
+        ddf_with_ua = dd.concat([ddf_with_ua, ua_features_ddf], axis=1)
+
+        # Optional: Cast the new boolean columns here
+        print("Defining casting for new UA boolean columns...")
+        ua_bool_cols = ['ua_is_mobile', 'ua_is_tablet', 'ua_is_pc', 'ua_is_bot']
+        for col in ua_bool_cols:
+            if col in ddf_with_ua.columns:
+                 try:
+                     ddf_with_ua[col] = ddf_with_ua[col].astype('boolean') # Use nullable boolean
+                 except Exception as e:
+                     print(f"Warning: Stage 2 - Could not cast column '{col}' to boolean. Error: {e}")
+
+    else:
+        print("STAGE 2: Skipping UA parsing - 'user_agent' column not found in input.")
+
+    print("STAGE 2: Dask graph definition complete (Add UA Features).")
+    return ddf_with_ua
 
 
 # --- Preprocessor Fitting (on Sample) ---
@@ -629,17 +655,40 @@ def apply_and_save_preprocessed_data(
     print(f"--- Preprocessing Application Complete. Results in '{output_base_dir}' ---")
 
 
-# Example Usage Placeholder (call these functions from your main script/notebook)
+# TODO: Update calls in main.py CLI to use these functions
 if __name__ == '__main__':
     print("This script provides functions for Dask-based preprocessing.")
-    print("Example workflow would be run from another script:")
+    from dask.distributed import Client, LocalCluster
+    from dask.diagnostics import ProgressBar
+
+    # --- Explicitly create a Dask Cluster/Client ---
+    # Limit memory per worker to encourage spilling if needed, adjust based on your RAM
+    # n_workers = os.cpu_count() # Start with number of CPU cores
+    dask_temp_dir = "/Users/paramkapur/dask-worker-staging"
+    os.makedirs(dask_temp_dir, exist_ok=True)
+    cluster = LocalCluster(
+            n_workers=1,            # Try fewer workers than cores initially
+            threads_per_worker=4,   # Often better for CPU-bound tasks than hyperthreading
+            memory_limit='14GB',      # Or '8GB', etc. - total RAM / n_workers roughly
+            local_directory=dask_temp_dir,
+            env={"DASK_PARTD_LOCATION": dask_temp_dir}
+    )
+    client = Client(cluster)
+
+    worker_dirs = client.run(lambda dask_worker: dask_worker.local_directory)
+
+    print("Local spill directories per worker:")
+    for addr, path in worker_dirs.items():
+        print(f"{addr}  ->  {path}")
+    print(f"Dask Dashboard Link: {client.dashboard_link}")
+
 
     # --- Configuration ---
     IMPRESSIONS_PATH = './data/snapshot_20250429/impressions/' # Input
     CONVERSIONS_PATH = './data/snapshot_20250429/conversions/' # Input
-    MERGED_DATA_DIR = './merged_data'                           # Intermediate output
+    MERGED_DATA_DIR = './data/merged'                           # Intermediate output
     PREPROCESSOR_DIR = './preprocessors'                        # Intermediate output
-    PROCESSED_NN_DATA_DIR = './processed_nn_data'               # Final output
+    PROCESSED_NN_DATA_DIR = './data/processed'               # Final output
 
     # Define ALL columns needed from impressions for merge, cleaning, final features
     # Be explicit to minimize data loaded/shuffled during merge
@@ -649,21 +698,20 @@ if __name__ == '__main__':
         # Add any other columns used in cleaning, feature eng, or needed for the final NN input
     ]
 
-    # --- 1. Define Dask Graph for Cleaning & Merging ---
-    # ddf_merged_graph = define_dask_cleaning_graph(
-    #     impressions_path=IMPRESSIONS_PATH,
-    #     conversions_path=CONVERSIONS_PATH,
-    #     impression_cols_needed=IMPRESSION_COLS_NEEDED
-    # )
-    # print("\nMerged Dask DataFrame Info (Lazy):")
-    # ddf_merged_graph.info() # Optional: check schema
+    print("Defining Dask graph for cleaning and merging...")
+    tasks = define_dask_cleaning_graph(
+        impressions_path=IMPRESSIONS_PATH,
+        conversions_path=CONVERSIONS_PATH,
+        impression_cols_needed=IMPRESSION_COLS_NEEDED
+    )
+    print("Executing Dask graph for cleaning and merging...")
+    row_counts = client.gather(tasks)            # dashboard shows 92 tasks
+    print("Rows written per campaign:", row_counts)
+    print("Dask graph execution complete.")
 
-    # --- 2. Execute Graph, Split, and Save Merged Data ---
-    # train_path, val_path, test_path = execute_graph_and_split_save(
-    #     ddf_merged=ddf_merged_graph,
-    #     output_base_path=MERGED_DATA_DIR
-    # )
-    # print(f"Merged data splits saved to: {train_path}, {val_path}, {test_path}")
+    print("Execution finished. Shutting down Dask client.")
+    client.close()
+    cluster.close()
 
     # --- 3. Fit Preprocessors on a Sample of Training Data ---
     # Define feature groups (or let the function use defaults)
@@ -687,5 +735,3 @@ if __name__ == '__main__':
     #     output_base_dir=PROCESSED_NN_DATA_DIR,
     #     target_column='conversion_flag'
     # )
-
-    print("\nPlaceholder execution finished. Uncomment and adapt the steps above in your main script.")
