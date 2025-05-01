@@ -182,106 +182,6 @@ def define_dask_cleaning_graph(
     return[load_merge_one(cid) for cid in conv_ids]
 
 
-
-
-
-def execute_graph_and_split_save(
-    ddf_merged: dd.DataFrame,
-    output_base_path: str,
-    split_ratios: list[float] = [0.8, 0.1, 0.1],
-    random_state: int = 42
-) -> tuple[str, str, str]:
-    """
-    Executes the Dask graph for merging/cleaning, splits the result,
-    and saves the train, validation, and test sets to Parquet directories.
-
-    Args:
-        ddf_merged: The Dask DataFrame graph returned by define_dask_cleaning_graph.
-        output_base_path: Base directory to save the splits (e.g., './merged_data').
-                          'train', 'val', 'test' subdirs will be created.
-        split_ratios: List containing fractions for train, val, test splits.
-        random_state: Seed for the random split.
-
-    Returns:
-        Tuple of paths to the saved train, validation, and test directories.
-    """
-    print(f"\n--- Executing Dask Graph, Splitting, and Saving to '{output_base_path}' ---")
-
-    # Define output paths
-    train_path = os.path.join(output_base_path, 'train')
-    val_path = os.path.join(output_base_path, 'val')
-    test_path = os.path.join(output_base_path, 'test')
-
-    # Ensure base directory exists
-    os.makedirs(output_base_path, exist_ok=True)
-
-    # Define the split (still lazy)
-    print(f"Defining random split ({split_ratios}) with random_state={random_state}...")
-    ddf_train, ddf_val, ddf_test = ddf_merged.random_split(
-        split_ratios, random_state=random_state
-    )
-
-    # Execute the computation and save
-    print("Triggering computation and saving train split...")
-    dd.to_parquet(ddf_train, train_path, write_index=False, overwrite=True, compute=True, write_metadata_file=False)
-    print("Computation and saving train split complete.")
-
-    print("Triggering computation and saving validation split...")
-    dd.to_parquet(ddf_val, val_path, write_index=False, overwrite=True, compute=True, write_metadata_file=False)
-    print("Computation and saving validation split complete.")
-
-    print("Triggering computation and saving test split...")
-    dd.to_parquet(ddf_test, test_path, write_index=False, overwrite=True, compute=True, write_metadata_file=False)
-    print("Computation and saving test split complete.")
-
-    print("--- Data Saving Complete ---")
-    return train_path, val_path, test_path
-
-
-def add_user_agent_features(
-    input_ddf: dd.DataFrame # The Dask DataFrame read from Stage 1 output
-    ) -> dd.DataFrame:
-    """
-    STAGE 2 GRAPH: Takes a Dask DataFrame (result of Stage 1), adds User Agent
-    features using map_partitions, and returns the new Dask DataFrame graph.
-    Assumes 'user_agent' column exists in input_ddf.
-    """
-    print("STAGE 2: Defining User Agent parsing graph...")
-    ddf_with_ua = input_ddf # Start with the input dataframe
-
-    if 'user_agent' in ddf_with_ua.columns:
-        ua_series = ddf_with_ua['user_agent'].fillna('')
-
-        meta_ua = pd.DataFrame({ # Define the structure returned by parse_ua_chunk
-            'ua_browser': pd.Series(dtype='object'), 'ua_os': pd.Series(dtype='object'),
-            'ua_device_family': pd.Series(dtype='object'), 'ua_device_brand': pd.Series(dtype='object'),
-            'ua_is_mobile': pd.Series(dtype='bool'), 'ua_is_tablet': pd.Series(dtype='bool'),
-            'ua_is_pc': pd.Series(dtype='bool'), 'ua_is_bot': pd.Series(dtype='bool')
-        }, index=pd.Index([], dtype='int64'))
-
-        ua_features_ddf = ua_series.map_partitions(parse_ua_chunk, meta=meta_ua)
-
-        # Drop original UA string and concat features
-        ddf_with_ua = ddf_with_ua.drop(columns=['user_agent'])
-        ddf_with_ua = dd.concat([ddf_with_ua, ua_features_ddf], axis=1)
-
-        # Optional: Cast the new boolean columns here
-        print("Defining casting for new UA boolean columns...")
-        ua_bool_cols = ['ua_is_mobile', 'ua_is_tablet', 'ua_is_pc', 'ua_is_bot']
-        for col in ua_bool_cols:
-            if col in ddf_with_ua.columns:
-                 try:
-                     ddf_with_ua[col] = ddf_with_ua[col].astype('boolean') # Use nullable boolean
-                 except Exception as e:
-                     print(f"Warning: Stage 2 - Could not cast column '{col}' to boolean. Error: {e}")
-
-    else:
-        print("STAGE 2: Skipping UA parsing - 'user_agent' column not found in input.")
-
-    print("STAGE 2: Dask graph definition complete (Add UA Features).")
-    return ddf_with_ua
-
-
 # --- Preprocessor Fitting (on Sample) ---
 
 def fit_and_save_preprocessors(
@@ -655,8 +555,11 @@ def apply_and_save_preprocessed_data(
     print(f"--- Preprocessing Application Complete. Results in '{output_base_dir}' ---")
 
 
-# TODO: Update calls in main.py CLI to use these functions
-if __name__ == '__main__':
+
+# --- Main Orchestration Functions ---
+
+# STAGE 1: Clean and Save Data
+def clean_and_save_data():
     print("This script provides functions for Dask-based preprocessing.")
     from dask.distributed import Client, LocalCluster
     from dask.diagnostics import ProgressBar
@@ -674,12 +577,6 @@ if __name__ == '__main__':
             env={"DASK_PARTD_LOCATION": dask_temp_dir}
     )
     client = Client(cluster)
-
-    worker_dirs = client.run(lambda dask_worker: dask_worker.local_directory)
-
-    print("Local spill directories per worker:")
-    for addr, path in worker_dirs.items():
-        print(f"{addr}  ->  {path}")
     print(f"Dask Dashboard Link: {client.dashboard_link}")
 
 
@@ -712,6 +609,20 @@ if __name__ == '__main__':
     print("Execution finished. Shutting down Dask client.")
     client.close()
     cluster.close()
+
+# STAGE 2: Parse User Agent Strings
+
+def parse_user_agent_strings():
+    print("Parsing user agent strings...")
+    # TODO: Implement user agent string parsing
+    print("Parsing complete.")
+
+
+
+
+# TODO: Update calls in main.py CLI to use these functions
+# if __name__ == '__main__':
+    
 
     # --- 3. Fit Preprocessors on a Sample of Training Data ---
     # Define feature groups (or let the function use defaults)
