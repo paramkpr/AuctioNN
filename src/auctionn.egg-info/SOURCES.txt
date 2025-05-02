@@ -6,8 +6,11 @@ src/auctionn.egg-info/dependency_links.txt
 src/auctionn.egg-info/top_level.txt
 src/data_processing/__init__.py
 src/data_processing/datasets.py
+src/data_processing/merge_and_clean.py
+src/data_processing/parse_ua_strings.py
 src/data_processing/preprocess.py
-src/mechanism/__init__.py
-src/mechanism/allocation.py
+src/data_processing/repartition.py
 src/models/__init__.py
-src/models/neural_net.py
+src/models/network.py
+src/training/__init__.py
+src/training/train_model.py

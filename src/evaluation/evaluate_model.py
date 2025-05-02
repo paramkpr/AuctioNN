@@ -20,8 +20,9 @@ from sklearn.metrics import (
 import pandas as pd # For displaying confusion matrix nicely
 
 # Import necessary components from your project
-from src.data_processing.datasets import AuctionDataset # Uses .npy files now
-from src.models.network import AuctionNetwork
+from data_processing.datasets import ParquetAuctionDataset
+from models.network import AuctionNetwork
+from training.train_model import count_pos_neg, infer_feature_counts
 
 def run_evaluation(
     processed_data_dir: str,
@@ -58,8 +59,8 @@ def run_evaluation(
     print(f"Loading preprocessor info from: {preprocessor_dir}")
     try:
         category_sizes = joblib.load(os.path.join(preprocessor_dir, 'category_sizes.joblib'))
-        numerical_features_to_scale = joblib.load(os.path.join(preprocessor_dir, 'numerical_features_to_scale.joblib'))
-        num_numerical_features = len(numerical_features_to_scale)
+        _, num_numerical_features = infer_feature_counts(processed_data_dir, "train")
+
     except FileNotFoundError as e:
         print(f"ERROR: Failed to load preprocessor files needed for model init. Details: {e}")
         raise
@@ -90,7 +91,7 @@ def run_evaluation(
     # --- Load Test Dataset & DataLoader ---
     print(f"Loading test data from: {processed_data_dir}")
     try:
-        test_dataset = AuctionDataset(processed_data_dir=processed_data_dir, split_name='test')
+        test_dataset = ParquetAuctionDataset(processed_data_dir=processed_data_dir + "/test", batch_rows=batch_size*4)
     except FileNotFoundError:
          print(f"ERROR: Failed to find test .npy files in {processed_data_dir}.")
          raise
@@ -185,12 +186,12 @@ def run_evaluation(
     return metrics
 
 # Example usage (if run directly, though typically called from main.py)
-# if __name__ == '__main__':
-#     results = run_evaluation(
-#         processed_data_dir='./data/processed_splits',
-#         preprocessor_dir='./preprocessors',
-#         model_path='./models/best_auction_network.pth'
-#     )
-#     print("\nEvaluation metrics dictionary:")
-#     import json
-#     print(json.dumps(results, indent=2)) 
+if __name__ == '__main__':
+    results = run_evaluation(
+        processed_data_dir='./data/processed',
+        preprocessor_dir='./preprocessors',
+        model_path='./models/best_02052025_01.pth'
+    )
+    print("\nEvaluation metrics dictionary:")
+    import json
+    print(json.dumps(results, indent=2)) 

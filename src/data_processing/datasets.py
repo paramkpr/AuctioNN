@@ -2,6 +2,9 @@ import torch
 from torch.utils.data import Dataset
 import numpy as np
 import os
+import pyarrow.dataset as ds
+from torch.utils.data import IterableDataset
+from typing import List
 
 class AuctionDataset(Dataset):
     """
@@ -84,3 +87,41 @@ class AuctionDataset(Dataset):
         target_tensor = torch.tensor(target_sample, dtype=torch.float32) # Target was already float32
 
         return categorical_tensor, numerical_tensor, target_tensor
+    
+
+
+
+class ParquetAuctionDataset(IterableDataset):
+    """
+    Streams (cat, num, target) batches directly from the Parquet directory that
+    `apply_and_save_preprocessed_data` produced.  No 8GB .npy arrays needed.
+    """
+    def __init__(self, split_dir: str,
+                 cat_cols: List[str] | None = None,
+                 num_cols: List[str] | None = None,
+                 target_col: str = "conversion_flag",
+                 batch_rows: int = 8192):
+        super().__init__()
+        self.ds = ds.dataset(split_dir, format="parquet")
+        schema_names = self.ds.schema.names
+
+        # Infer column lists if not provided
+        self.cat_cols = cat_cols or [c for c in schema_names if c.startswith("cat_")]
+        self.num_cols = num_cols or [c for c in schema_names if c.startswith("num_")]
+        self.target_col = target_col
+        self.columns = self.cat_cols + self.num_cols + [self.target_col]
+        self.batch_rows = batch_rows
+
+    def __iter__(self):
+        scanner = self.ds.scanner(columns=self.columns,
+                                  batch_size=self.batch_rows,
+                                  use_threads=True)
+        for record_batch in scanner.to_batches():
+            arr = record_batch.to_pandas()
+
+            cats = torch.from_numpy(arr[self.cat_cols].values).long()
+            nums = torch.from_numpy(arr[self.num_cols].values).float()
+            target = torch.from_numpy(arr[[self.target_col]].values).float()
+
+            for i in range(len(cats)):          # yield row‑wise = map‑style dataset
+                yield cats[i], nums[i], target[i]

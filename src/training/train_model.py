@@ -6,10 +6,34 @@ import joblib
 import os
 from tqdm import tqdm
 import numpy as np
-
+import pyarrow.dataset as ds
+import pyarrow.compute as pc
 # Import necessary components from your project
-from src.data_processing.datasets import AuctionDataset
-from src.models.network import AuctionNetwork
+from data_processing.datasets import ParquetAuctionDataset
+from models.network import AuctionNetwork
+
+def count_pos_neg(processed_data_dir: str, split: str = "train",
+                  target_col: str = "conversion_flag") -> tuple[int, int]:
+    """
+    Returns (#negatives, #positives) by scanning only Parquet footers +
+    a fast Arrow aggregate – no full-table materialisation.
+    """
+    dset = ds.dataset(os.path.join(processed_data_dir, split), format="parquet")
+    total = dset.count_rows()
+    pos   = dset.count_rows(filter=pc.field(target_col) == 1)
+    neg   = total - pos
+    return neg, pos
+
+def infer_feature_counts(processed_data_dir: str, split: str = "train") -> tuple[int, int]:
+    """
+    Inspects the schema once and returns (n_categorical, n_numerical).
+    """
+    schema = ds.dataset(os.path.join(processed_data_dir, split), format="parquet").schema
+    n_cat  = sum(1 for n in schema.names if n.startswith("cat_"))
+    n_num  = sum(1 for n in schema.names if n.startswith("num_"))
+    return n_cat, n_num
+
+
 
 def run_training(
     processed_data_dir: str,
@@ -58,45 +82,36 @@ def run_training(
     try:
         # Load only what's needed for model init and loss weight
         category_sizes = joblib.load(os.path.join(preprocessor_dir, 'category_sizes.joblib'))
-        numerical_features_to_scale = joblib.load(os.path.join(preprocessor_dir, 'numerical_features_to_scale.joblib'))
-        num_numerical_features = len(numerical_features_to_scale)
-        # Load target data for pos_weight calculation
-        train_tgt_path = os.path.join(processed_data_dir, "train_target_data.npy")
-        train_targets_np = np.load(train_tgt_path)
+        _, num_numerical_features = infer_feature_counts(processed_data_dir, "train")
+
     except FileNotFoundError as e:
         print(f"ERROR: Failed to load necessary preprocessor/data files. Details: {e}")
         raise
     print("Preprocessor info loaded successfully.")
 
 
-    # --- Create Datasets from processed .npy files ---
-    print("Creating Datasets from pre-processed files...")
-    try:
-        train_dataset = AuctionDataset(processed_data_dir=processed_data_dir, split_name='train')
-        val_dataset = AuctionDataset(processed_data_dir=processed_data_dir, split_name='val')
-        # Assuming test data would be loaded similarly if needed later
-    except FileNotFoundError:
-         print(f"ERROR: Failed to find train/val .npy files in {processed_data_dir}. Make sure preprocessing was run.")
-         raise
-    except ValueError as ve: # Catch shape mismatch error from Dataset init
-         print(f"ERROR: {ve}")
-         raise
+    # ---- Create Datasets & DataLoaders ---------------------------------
+    train_dir = os.path.join(processed_data_dir, "train")
+    val_dir   = os.path.join(processed_data_dir, "val")
 
+    train_dataset = ParquetAuctionDataset(train_dir, batch_rows=batch_size*4)
+    val_dataset   = ParquetAuctionDataset(val_dir,   batch_rows=batch_size*4)
 
-    # --- Create DataLoaders ---
-    print("Creating DataLoaders...")
-    # Check if datasets are non-empty before creating loaders
-    if len(train_dataset) == 0:
-        raise ValueError("Training dataset is empty.")
-    if len(val_dataset) == 0:
-        # If validation is empty, we might want to skip it or handle differently
-        print("Warning: Validation dataset is empty. Training without validation.")
-        val_loader = None # Set loader to None
-    else:
-         val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=min(4, os.cpu_count()), pin_memory=True)
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=False,         # IterableDataset must be False
+        num_workers=min(4, os.cpu_count()),
+        pin_memory=True,
+    )
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=min(4, os.cpu_count()), pin_memory=True)
-
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=min(4, os.cpu_count()),
+        pin_memory=True,
+    )
 
     # --- Initialize Model ---
     print("Initializing model...")
@@ -110,12 +125,10 @@ def run_training(
     print(model)
 
     # --- Define Loss Function and Optimizer ---
-    print("Calculating positive weight for loss function...")
-    # Use the loaded training targets
-    neg_count = np.sum(train_targets_np == 0)
-    pos_count = np.sum(train_targets_np == 1)
+    print("Counting positives/negatives …")
+    neg_count, pos_count = count_pos_neg(processed_data_dir, "train", "conversion_flag")
     pos_weight_value = float(neg_count / pos_count) if pos_count > 0 else 1.0
-    print(f"Using pos_weight: {pos_weight_value:.4f}")
+    print(f"Pos weight: {pos_weight_value:.4f}")
     criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(pos_weight_value, device=resolved_device))
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
@@ -131,7 +144,7 @@ def run_training(
         for cat_batch, num_batch, target_batch in train_loop:
              cat_batch = cat_batch.to(resolved_device)
              num_batch = num_batch.to(resolved_device)
-             target_batch = target_batch.to(resolved_device).unsqueeze(1) # Add dim for loss fn
+             target_batch = target_batch.to(resolved_device)
 
              optimizer.zero_grad()
              outputs = model(cat_batch, num_batch)
@@ -200,3 +213,13 @@ def run_training(
         final_model_path = save_model_path.replace('.pth', '_final.pth')
         torch.save(model.state_dict(), final_model_path)
         print(f"Final model state saved to: {final_model_path}")
+
+
+if __name__ == "__main__":
+    run_training(
+        processed_data_dir="./data/processed",
+        preprocessor_dir="./preprocessors",
+        save_model_path="./models/best_02052025_01.pth",
+        epochs=1,
+        batch_size=2048,
+    )
