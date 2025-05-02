@@ -74,28 +74,9 @@ if __name__ == "__main__":
     client = Client(cluster)
     print(f"Dask Dashboard Link: {client.dashboard_link}")
 
-    # Read in the data
-    meta_cols = {
-        "campaign_id": "int64",
-        "unique_id": "str",
-        "impression_dttm_utc": "time64[ns]",
-        "cnxn_type": "str",
-        "user_agent": "str",
-        "dma": "int8",
-        "country": "str",
-        "prizm_premier_code": "str",
-        "device_type": "str",
-        "conv_dttm_utc": "time64[ns]",
-        "conversion_flag": "int8",
-        "impression_hour": "Int32",
-        "impression_dayofweek": "Int32",
-    }
-    schema = pa.schema(meta_cols)
-
     for split in ["train", "val", "test"]:
         df = dd.read_parquet(
             f"./data/repartitioned/{split}/",
-            # dataset={"schema": schema},
             engine="pyarrow",
             split_row_groups="adaptive",
             blocksize="64MB",
@@ -134,7 +115,6 @@ if __name__ == "__main__":
             write_index=False,
             overwrite=True,
             compression="snappy",
-            # append=True,  # << important for restartability
             ignore_divisions=True,  # sections may not align exactly
         )
 
