@@ -156,7 +156,7 @@ Table~\ref{tab:variables} formalizes the symbols used throughout the paper.
   \begin{tabular}{ll}
     \hline
     Symbol / Term & Meaning \\
-    \hline \\
+    \hline \\ 
     $I_t$ & Impression delivered at discrete time~$t$. \\
     $\mathrm{features}(I_t)$ & All metadata included in the bid request. \\
     $C$ & Active campaign set. $c \in C$ is one specific campaign. \\
@@ -472,6 +472,76 @@ auctionn_sim/
   - models/                % best_model.pth  (TorchScript or state-dict)
   - preprocessors/         % encoder / scaler artefacts
   - main.py                % CLI entry point
+\end{verbatim}
+
+\subsection{Data Preprocessing}
+
+The data preprocessing is done in the preprocess.py file. The data is preprocessed in the following steps:
+
+\begin{itemize}
+  \item Integer encoding of categorical features.
+  \item Standardization of numerical features.
+\end{itemize}
+
+The data before preprocessing is merged from the impressions and conversions data files.
+The merged data is saved to the data/merged directory. Then we clean the data
+(remove duplicates, fill missing values, parse user agent strings, etc.)
+and save the cleaned data to the data/cleaned directory. 
+\begin{itemize}
+  \item \textbf{Impressions:} 1,103,345,895 (1.1 billion)
+  \item \textbf{Conversions:} 11,088,921 (11.1 million)
+  \item \textbf{Campaigns:} 88
+\end{itemize} in the training set.
+ The validation and test sets are  each 10\% of the total merged impressions and conversions data.
+The columns at this point are 
+described in Table~\ref{tab:data_columns}. At this point we have 
+
+\begin{table}[H]
+\caption{DataFrame Structure and Feature Details before preprocessing}
+\label{tab:data_columns}
+\begin{tabular}{ll@{\quad\quad}l@{\quad\quad\quad}l}
+\toprule
+\# & \textbf{Column} & \textbf{Dtype} & \textbf{Details} \\
+\midrule
+- & \texttt{unique\_id} & string & Drop before preprocessor (biases training) \\
+- & \texttt{impression\_dttm\_utc} & datetime64[ns] & Drop before preprocessor (not needed) \\
+- & \texttt{device\_type} & string & Drop (already in ua\_* columns) \\
+- & \texttt{conv\_dttm\_utc} & datetime64[ns] & Drop before preprocessor (not needed) \\
+\midrule
+1 & \texttt{campaign\_id} & int32 & Categorical (Ordinal Encoder) \\
+2 & \texttt{cnxn\_type} & string & Categorical (Ordinal Encoder) \\
+3 & \texttt{dma} & int16 & Categorical (Ordinal Encoder) \\
+4 & \texttt{country} & string & Categorical (Ordinal Encoder) \\
+5 & \texttt{prizm\_premier\_code} & string & Categorical (Ordinal Encoder) \\
+6 & \texttt{ua\_browser} & object & Categorical (Ordinal Encoder) \\
+7 & \texttt{ua\_os} & object & Categorical (Ordinal Encoder) \\
+8 & \texttt{ua\_device\_family} & object & Categorical (Ordinal Encoder) \\
+9 & \texttt{ua\_device\_brand} & object & Categorical (Ordinal Encoder) \\
+\midrule
+10 & \texttt{impression\_hour} & int8 & Cyclical (Numerical Encoder) \\
+11 & \texttt{impression\_dayofweek} & int8 & Cyclical (Numerical Encoder) \\
+\midrule
+12 & \texttt{ua\_is\_mobile} & bool & Boolean (Numerical Encoder) \\
+13 & \texttt{ua\_is\_tablet} & bool & Boolean (Numerical Encoder) \\
+14 & \texttt{ua\_is\_pc} & bool & Boolean (Numerical Encoder) \\
+15 & \texttt{ua\_is\_bot} & bool & Boolean (Numerical Encoder) \\
+\midrule
+16 & \texttt{conversion\_flag} & int8 & *Target* \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Just as a note the category sizes when we fit the OrdinalEncoder are as follows:
+\begin{verbatim}
+  {'campaign_id': 89,
+ 'cnxn_type': 5,
+ 'country': 191,
+ 'dma': 212,
+ 'prizm_premier_code': 70,
+ 'ua_browser': 521,
+ 'ua_device_brand': 74,
+ 'ua_device_family': 7679,
+ 'ua_os': 28}
 \end{verbatim}
 
 \subsection{Impression Stream}
