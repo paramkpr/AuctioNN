@@ -6,6 +6,7 @@ on a sample, apply preprocessors to the full dataset, and save the results.
 Main orchestration should happen outside these functions, potentially in a
 main script or notebook, calling these functions in sequence.
 """
+
 import os
 import joblib
 import pandas as pd
@@ -46,6 +47,7 @@ CYCLICAL_FEATURES = [
 #  Core routine: fit encoders on a *given* DataFrame sample
 # ---------------------------------------------------------------------------
 
+
 def fit_and_save_preprocessors(
     train_df: pd.DataFrame,
     output_dir: str = "./preprocessors",
@@ -81,15 +83,15 @@ def fit_and_save_preprocessors(
             # ⇒ numeric feature (e.g. campaign_id or dma)
             cat_df[col] = (
                 cat_df[col]
-                .fillna(-1)               # sentinel that survives casting
-                .astype(target_dtype)     # e.g. "int16", "int64"
+                .fillna(-1)  # sentinel that survives casting
+                .astype(target_dtype)  # e.g. "int16", "int64"
             )
         else:
             # ⇒ string / object feature: use pandas StringDtype for uniformity
             cat_df[col] = (
                 cat_df[col]
-                .astype("string")         # ensures NA is <NA>, not NaN/None/…
-                .fillna("-1")             # now column is purely StringDtype
+                .astype("string")  # ensures NA is <NA>, not NaN/None/…
+                .fillna("-1")  # now column is purely StringDtype
             )
 
     categorical_encoder.fit(cat_df)
@@ -126,9 +128,11 @@ def fit_and_save_preprocessors(
     #  PERSIST
     # ───────────────────────────────────────────────────────────────────
     print("• saving artefacts …")
-    joblib.dump(categorical_encoder, os.path.join(output_dir, "categorical_encoder.joblib"))
-    joblib.dump(numerical_scaler,   os.path.join(output_dir, "numerical_scaler.joblib"))
-    joblib.dump(category_sizes,     os.path.join(output_dir, "category_sizes.joblib"))
+    joblib.dump(
+        categorical_encoder, os.path.join(output_dir, "categorical_encoder.joblib")
+    )
+    joblib.dump(numerical_scaler, os.path.join(output_dir, "numerical_scaler.joblib"))
+    joblib.dump(category_sizes, os.path.join(output_dir, "category_sizes.joblib"))
     print("  ↳ all saved.")
 
     print("--- Preprocessor fitting complete. ---\n")
@@ -139,6 +143,7 @@ def fit_and_save_preprocessors(
 #  Helper: build a stratified 8.8 M‑row sample then delegate to fitter
 # ---------------------------------------------------------------------------
 
+
 def fit_preprocessors_on_sample(
     train_data_path: str,
     output_dir: str = "./preprocessors",
@@ -148,8 +153,10 @@ def fit_preprocessors_on_sample(
     Samples `n_rows_per_campaign` rows from every `campaign_id=*` partition in
     `train_data_path`, concatenates them, then calls `fit_and_save_preprocessors`.
     """
-    print(f"\n=== Sampling {n_rows_per_campaign} rows per campaign "
-          f"from '{train_data_path}' ===")
+    print(
+        f"\n=== Sampling {n_rows_per_campaign} rows per campaign "
+        f"from '{train_data_path}' ==="
+    )
 
     # 1. discover partition folders (campaign_id=12345/ …)
     campaign_ids = sorted(
@@ -164,9 +171,7 @@ def fit_preprocessors_on_sample(
     dset = ds.dataset(train_data_path, format="parquet", partitioning="hive")
 
     # 3. only request the needed columns to keep scan light
-    colset = (
-        list(CATEGORICAL_FEATURES) + BOOLEAN_FEATURES + CYCLICAL_FEATURES
-    )
+    colset = list(CATEGORICAL_FEATURES) + BOOLEAN_FEATURES + CYCLICAL_FEATURES
 
     dfs = []
     for cid in campaign_ids:
@@ -188,12 +193,12 @@ def fit_preprocessors_on_sample(
     del sample_df  # free memory
 
 
-
 # --- Applying Preprocessors with Dask ---
+
 
 def apply_preprocessors_partition(
     df: pd.DataFrame,
-    encoders,                       # tuple (categorical_encoder, numerical_scaler)
+    encoders,  # tuple (categorical_encoder, numerical_scaler)
     target_column: str = "conversion_flag",
 ) -> pd.DataFrame:
     cat_enc, num_scal = encoders
@@ -202,13 +207,13 @@ def apply_preprocessors_partition(
     cat_df = df[list(CATEGORICAL_FEATURES)].copy()
     for col in CATEGORICAL_FEATURES:
         if col in {"campaign_id", "dma"}:
-            cat_df[col] = cat_df[col].fillna(-1)
+            cat_df[col] = pd.to_numeric(cat_df[col], errors="raise").astype("int64")
         else:
             cat_df[col] = cat_df[col].astype("string").fillna("-1")
     cat_df = cat_df.astype(CATEGORICAL_FEATURES)
 
     cat_np = cat_enc.transform(cat_df).astype(np.int64)
-    cat_np[cat_np == -1] = 0        # reserve 0 for “unknown”
+    cat_np[cat_np == -1] = 0  # reserve 0 for “unknown”
 
     # -------- numerical --------
     num_df = pd.DataFrame(index=df.index)
@@ -216,11 +221,11 @@ def apply_preprocessors_partition(
         num_df[col] = df[col].astype(float)
 
     hour = df["impression_hour"]
-    day  = df["impression_dayofweek"]
+    day = df["impression_dayofweek"]
     num_df["hour_sin"] = np.sin(2 * np.pi * hour / 24.0)
     num_df["hour_cos"] = np.cos(2 * np.pi * hour / 24.0)
-    num_df["day_sin"]  = np.sin(2 * np.pi * day / 7.0)
-    num_df["day_cos"]  = np.cos(2 * np.pi * day / 7.0)
+    num_df["day_sin"] = np.sin(2 * np.pi * day / 7.0)
+    num_df["day_cos"] = np.cos(2 * np.pi * day / 7.0)
 
     num_np = num_scal.transform(num_df).astype(np.float32)
 
@@ -237,12 +242,11 @@ def apply_preprocessors_partition(
     return processed
 
 
-
 def apply_and_save_preprocessed_data(
     input_path: str,
     preprocessor_dir: str,
     output_base_dir: str,
-    target_column: str = 'conversion_flag'
+    target_column: str = "conversion_flag",
 ):
     """
     Loads data splits (train, val, test) as Dask DataFrames, applies the pre-fitted
@@ -268,31 +272,31 @@ def apply_and_save_preprocessed_data(
     client = Client(cluster)
     print(f"Dask Dashboard Link: {client.dashboard_link}")
 
-    print("\n--- Applying Preprocessors to Full Data Splits using Dask map_partitions ---")
+    print(
+        "\n--- Applying Preprocessors to Full Data Splits using Dask map_partitions ---"
+    )
     os.makedirs(output_base_dir, exist_ok=True)
 
-
-    cat_enc  = joblib.load(os.path.join(preprocessor_dir, "categorical_encoder.joblib"))
+    cat_enc = joblib.load(os.path.join(preprocessor_dir, "categorical_encoder.joblib"))
     num_scal = joblib.load(os.path.join(preprocessor_dir, "numerical_scaler.joblib"))
-    enc_future = client.scatter((cat_enc, num_scal), broadcast=True)
-
 
     n_cat = len(cat_enc.categories_)
     n_num = num_scal.mean_.shape[0]
-    meta_cols = {f"cat_{i}": pd.Series(dtype="int64")   for i in range(n_cat)}
+    meta_cols = {f"cat_{i}": pd.Series(dtype="int64") for i in range(n_cat)}
     meta_cols.update({f"num_{i}": pd.Series(dtype="float32") for i in range(n_num)})
     meta_cols[target_column] = pd.Series(dtype="float32")
     meta_processed = pd.DataFrame(meta_cols)
 
-
-    for split_name in ['train', 'val', 'test']:
+    for split_name in ["train", "val", "test"]:
         print(f"\nProcessing '{split_name}' split from: {input_path}/{split_name}")
 
         # 1) Read only needed columns
-        needed_cols = (list(CATEGORICAL_FEATURES)
-                    + BOOLEAN_FEATURES
-                    + CYCLICAL_FEATURES
-                    + [target_column])
+        needed_cols = (
+            list(CATEGORICAL_FEATURES)
+            + BOOLEAN_FEATURES
+            + CYCLICAL_FEATURES
+            + [target_column]
+        )
 
         ddf_split = dd.read_parquet(
             f"{input_path}/{split_name}",
@@ -303,7 +307,7 @@ def apply_and_save_preprocessed_data(
 
         ddf_processed = ddf_split.map_partitions(
             apply_preprocessors_partition,
-            encoders=enc_future,
+            encoders=(cat_enc, num_scal),
             target_column=target_column,
             meta=meta_processed,
         )
@@ -312,9 +316,14 @@ def apply_and_save_preprocessed_data(
         print(f"Triggering computation and saving for '{split_name}'...")
 
         with ProgressBar():
-            ddf_processed.to_parquet(output_path, write_index=False, overwrite=True,
-                                      compression="snappy", ignore_divisions=True)
-            
+            ddf_processed.to_parquet(
+                output_path,
+                write_index=False,
+                overwrite=True,
+                compression="snappy",
+                ignore_divisions=True,
+            )
+
         print(f"Computation and saving complete for '{split_name}'.")
 
     print(f"--- Preprocessing Application Complete. Results in '{output_base_dir}' ---")
@@ -322,17 +331,17 @@ def apply_and_save_preprocessed_data(
     cluster.close()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     pass
-    # fit_preprocessors_on_sample(
-    #     train_data_path="./data/cleaned/train",
-    #     output_dir="./preprocessors",
-    #     n_rows_per_campaign=100_000,   # 100 k × 88  ≈ 8.8 M rows
-    # )
-    
+    fit_preprocessors_on_sample(
+        train_data_path="./data/cleaned/train",
+        output_dir="./preprocessors",
+        n_rows_per_campaign=100_000,   # 100 k × 88  ≈ 8.8 M rows
+    )
+
     apply_and_save_preprocessed_data(
         input_path="./data/cleaned",
         preprocessor_dir="./preprocessors",
         output_base_dir="./data/processed",
-        target_column='conversion_flag'
+        target_column="conversion_flag",
     )
