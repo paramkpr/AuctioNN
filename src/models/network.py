@@ -90,7 +90,7 @@ class ImpressionConversionNetwork(nn.Module):
         )
 
         for i, emb in enumerate(self.wide_embeddings):
-            wide_logits += emb(categorical[:, i]).unsqueeze(1)  # Shape: (B, 1)
+            wide_logits += emb(categorical[:, i])  # Shape: (B, 1)
 
         # Deep part
         deep_embeddings = [
@@ -106,4 +106,4 @@ class ImpressionConversionNetwork(nn.Module):
         if not return_logits:
             logits = torch.sigmoid(logits)
 
-        return logits
+        return logits.squeeze(-1)
