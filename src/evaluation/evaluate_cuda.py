@@ -31,7 +31,7 @@ EXPORT_SCORES = True                    # True → write scores.csv
 # ---- Dataset wrapper -------------------------------------------------
 
 
-CARDINALITIES = [89, 5, 212, 191, 70, 521, 74, 7679, 28]
+CARDINALITIES = [88, 4, 211, 190, 69, 520, 27, 7678, 73]
 
 def load_model(ckpt_path: str, device: torch.device):
     model = ImpressionConversionNetwork(CARDINALITIES, numeric_dim=8, deep_embedding_dim=16)

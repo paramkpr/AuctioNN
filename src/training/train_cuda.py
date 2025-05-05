@@ -173,7 +173,7 @@ def train(
 if __name__ == "__main__":
     from models.network import ImpressionConversionNetwork   # replace with your module path
 
-    CARDINALITIES = [89, 5, 212, 191, 70, 521, 74, 7679, 28]
+    CARDINALITIES = [88, 4, 211, 190, 69, 520, 27, 7678, 73]
 
     model = ImpressionConversionNetwork(
         categorical_cardinalities=CARDINALITIES,
