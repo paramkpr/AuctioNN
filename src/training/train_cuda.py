@@ -54,7 +54,8 @@ def run_epoch(
     model.train(is_train)
 
     running_loss = 0.0
-    pbar = tqdm(enumerate(dataloader, 1), total=len(dataloader), disable=os.getenv("CI"))
+    total_batches = len(dataloader)
+    pbar = tqdm(enumerate(dataloader, 1), total=total_batches, disable=os.getenv("CI"))
     for batch_idx, (cat, num, y) in pbar:
         cat, num, y = cat.to(device), num.to(device), y.to(device)
 
@@ -74,7 +75,7 @@ def run_epoch(
         # ap_metric.update(preds_cpu, labels_cpu.int())
 
         # ---- tensorboard per-100 ------------------------------------------
-        if global_step % 100 == 0:
+        if global_step % max(1, total_batches // 100) == 0:
             running_loss += loss.item() * y.size(0)
 
             writer.add_scalar(f"{phase}/batch_loss", loss.item(), global_step)
@@ -118,8 +119,10 @@ def train(
     model.to(device)
 
     writer = SummaryWriter(log_dir)
-    imbalance = (len(train_ds) - train_ds.label.sum()) / train_ds.label.sum()
-    criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(imbalance, device=device))
+    imbalance_train = (len(train_ds) - train_ds.label.sum()) / train_ds.label.sum()
+    imbalance_val = (len(val_ds) - val_ds.label.sum()) / val_ds.label.sum()
+    criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(imbalance_train, device=device))
+    criterion_val = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(imbalance_val, device=device))
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-5)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs)
     scaler = torch.amp.GradScaler("cuda")
@@ -159,7 +162,7 @@ def train(
         # ---- validation ------------------------------------------------
         with torch.no_grad():
             run_epoch(
-                model, val_loader, criterion, None,
+                model, val_loader, criterion_val, None,
                 auc_metric, scaler, writer, "val",
                 epoch, device, global_step
             )
@@ -204,7 +207,7 @@ if __name__ == "__main__":
         model           = model,
         train_ds        = train_ds,
         val_ds          = val_ds,
-        batch_size      = 2**14,    # fits on A100‑40GB with mixed precision
+        batch_size      = 2**12,    # fits on A100‑40GB with mixed precision
         num_epochs      = 10,
         pos_neg_ratio   = 4,         # 1 positive : 4 negatives sampler
         log_dir         = "./runs/wad/" + datetime.now().strftime("%Y%m%d_%H%M%S"),
