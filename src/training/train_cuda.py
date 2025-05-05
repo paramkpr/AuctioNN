@@ -179,7 +179,7 @@ if __name__ == "__main__":
     from models.network import ImpressionConversionNetwork   # replace with your module path
     import joblib
 
-    cat_enc = joblib.load("./preprocessors/cat_enc.joblib")
+    cat_enc = joblib.load("./preprocessors/categorical_encoder.joblib")
     CARDINALITIES = [len(cat) for cat in cat_enc.categories_] # +1 → reserve row for <UNK>
 
     model = ImpressionConversionNetwork(
