@@ -52,6 +52,7 @@ def run_epoch(
     is_train = optimizer is not None
     model.train(is_train)
 
+    scaler = torch.amp.GradScaler("cuda")
     running_loss = 0.0
     pbar = tqdm(enumerate(dataloader, 1), total=len(dataloader), disable=os.getenv("CI"))
     for batch_idx, (cat, num, y) in pbar:
@@ -62,21 +63,24 @@ def run_epoch(
             loss = criterion(logits, y)
 
         if is_train:
+            scaler.scale(loss).backward()              # <-- use GradScaler if you’re in AMP
+            scaler.step(optimizer)
+            scaler.update()
             optimizer.zero_grad(set_to_none=True)
-            loss.backward()
-            optimizer.step()
 
         # ---- metrics ----------------------------------------------------
         running_loss += loss.item() * y.size(0)
-        preds = torch.sigmoid(logits.detach())
-        auc_metric.update(preds, y.int())
-        ap_metric.update(preds, y.int())
+        preds_cpu  = torch.sigmoid(logits.detach()).cpu()
+        labels_cpu = y.detach().cpu()
+        auc_metric.update(preds_cpu, labels_cpu.int())
+        ap_metric.update(preds_cpu, labels_cpu.int())
 
-        # ---- tensorboard per‑batch -------------------------------------
-        writer.add_scalar(f"{phase}/batch_loss", loss.item(), global_step)
-        if is_train:
-            for i, pg in enumerate(optimizer.param_groups):
-                writer.add_scalar(f"lr/group_{i}", pg["lr"], global_step)
+        # ---- tensorboard per-100 ------------------------------------------
+        if global_step % 100 == 0:
+            writer.add_scalar(f"{phase}/batch_loss", loss.item(), global_step)
+            if is_train:
+                for i, pg in enumerate(optimizer.param_groups):
+                    writer.add_scalar(f"lr/group_{i}", pg["lr"], global_step)
 
         pbar.set_description(
             f"{phase}  Epoch {epoch}  Loss {loss.item():.4f}"
@@ -120,17 +124,18 @@ def train(
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs)
 
     # --- torchmetrics objects reused each epoch ------------------------
-    auc_metric = BinaryAUROC().to(device)
-    ap_metric = BinaryAveragePrecision().to(device)
+    auc_metric = BinaryAUROC(compute_on_step=False).to("cpu")
+    ap_metric  = BinaryAveragePrecision(compute_on_step=False).to("cpu")
 
     # --- dataloaders ---------------------------------------------------
     train_loader = DataLoader(
         train_ds,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=8,
+        num_workers=16,
         pin_memory=True,
         persistent_workers=True,
+        prefetch_factor=4
     )
     val_loader = DataLoader(
         val_ds,
@@ -172,8 +177,10 @@ def train(
 # ------------------------------------------------------------
 if __name__ == "__main__":
     from models.network import ImpressionConversionNetwork   # replace with your module path
+    import joblib
 
-    CARDINALITIES = [88, 4, 211, 190, 69, 520, 27, 7678, 73]
+    cat_enc = joblib.load("./preprocessors/cat_enc.joblib")
+    CARDINALITIES = [len(cat) for cat in cat_enc.categories_] # +1 → reserve row for <UNK>
 
     model = ImpressionConversionNetwork(
         categorical_cardinalities=CARDINALITIES,
@@ -195,7 +202,7 @@ if __name__ == "__main__":
         model           = model,
         train_ds        = train_ds,
         val_ds          = val_ds,
-        batch_size      = 65_536,    # fits on A100‑40GB with mixed precision
+        batch_size      = 131_072,    # fits on A100‑40GB with mixed precision
         num_epochs      = 10,
         pos_neg_ratio   = 4,         # 1 positive : 4 negatives sampler
         log_dir         = "./runs/wad",
