@@ -137,7 +137,7 @@ def train(
         num_workers=0,
         pin_memory=True,
         persistent_workers=True,
-        prefetch_factor=4,
+        # prefetch_factor=4,
     )
     val_loader = DataLoader(
         val_ds,
