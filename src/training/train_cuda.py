@@ -183,8 +183,8 @@ if __name__ == "__main__":
         dropout=0.2,
     )
 
-    train_ds = InMemoryDataset("processed/train_tensor_cache.pt")
-    val_ds   = InMemoryDataset("processed/val_tensor_cache.pt")
+    train_ds = InMemoryDataset("./data/processed/train_tensor_cache.pt")
+    val_ds   = InMemoryDataset("./data/processed/val_tensor_cache.pt")
 
     train(
         model           = model,
