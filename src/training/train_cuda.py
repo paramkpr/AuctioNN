@@ -123,7 +123,7 @@ def train(
     ap_metric = BinaryAveragePrecision().to(device)
 
     # --- dataloaders ---------------------------------------------------
-    train_sampler = make_ratio_sampler(train_ds.labels, k=pos_neg_ratio)
+    train_sampler = make_ratio_sampler(train_ds.label, k=pos_neg_ratio)
     train_loader = DataLoader(
         train_ds,
         batch_size=batch_size,
