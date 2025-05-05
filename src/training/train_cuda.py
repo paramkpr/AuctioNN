@@ -114,7 +114,8 @@ def train(
     model.to(device)
 
     writer = SummaryWriter(log_dir)
-    criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(pos_neg_ratio, device=device))
+    imbalance = (len(train_ds) - train_ds.label.sum()) / train_ds.label.sum()
+    criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(imbalance, device=device))
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-5)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs)
 
@@ -123,11 +124,10 @@ def train(
     ap_metric = BinaryAveragePrecision().to(device)
 
     # --- dataloaders ---------------------------------------------------
-    train_sampler = make_ratio_sampler(train_ds.label, k=pos_neg_ratio)
     train_loader = DataLoader(
         train_ds,
         batch_size=batch_size,
-        sampler=train_sampler,
+        shuffle=True,
         num_workers=8,
         pin_memory=True,
         persistent_workers=True,
@@ -182,9 +182,14 @@ if __name__ == "__main__":
         mlp_hidden=(128, 64),
         dropout=0.2,
     )
+    print("Loadded model successfully")
+
+    print("Loading train and val datasets, adding to memory...")
 
     train_ds = InMemoryDataset("./data/processed/train_tensor_cache.pt")
     val_ds   = InMemoryDataset("./data/processed/val_tensor_cache.pt")
+
+    print("starting training...")
 
     train(
         model           = model,
