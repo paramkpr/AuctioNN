@@ -133,7 +133,7 @@ def train(
     train_loader = DataLoader(
         train_ds,
         batch_size=batch_size,
-        shuffle=True,
+        shuffle=False,
         num_workers=0,
         pin_memory=True,
         # persistent_workers=True,
