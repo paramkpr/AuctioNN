@@ -124,8 +124,8 @@ def train(
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs)
 
     # --- torchmetrics objects reused each epoch ------------------------
-    auc_metric = BinaryAUROC(compute_on_step=False).to("cpu")
-    ap_metric  = BinaryAveragePrecision(compute_on_step=False).to("cpu")
+    auc_metric = BinaryAUROC().to("cpu")
+    ap_metric  = BinaryAveragePrecision().to("cpu")
 
     # --- dataloaders ---------------------------------------------------
     train_loader = DataLoader(
