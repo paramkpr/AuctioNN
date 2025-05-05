@@ -40,6 +40,7 @@ def run_epoch(
     criterion: nn.Module,
     optimizer: Optional[torch.optim.Optimizer],
     auc_metric: BinaryAUROC,
+    scaler: torch.amp.GradScaler,
     # ap_metric: BinaryAveragePrecision,
     writer: SummaryWriter,
     phase: str,
@@ -52,7 +53,6 @@ def run_epoch(
     is_train = optimizer is not None
     model.train(is_train)
 
-    scaler = torch.amp.GradScaler("cuda")
     running_loss = 0.0
     pbar = tqdm(enumerate(dataloader, 1), total=len(dataloader), disable=os.getenv("CI"))
     for batch_idx, (cat, num, y) in pbar:
@@ -81,9 +81,9 @@ def run_epoch(
                 for i, pg in enumerate(optimizer.param_groups):
                     writer.add_scalar(f"lr/group_{i}", pg["lr"], global_step)
 
-        pbar.set_description(
-            f"{phase}  Epoch {epoch}  Loss {loss.item():.4f}"
-        )
+            pbar.set_description(
+                f"{phase}  Epoch {epoch}  Loss {loss.item():.4f}"
+            )
 
         global_step += 1
         if max_batches and batch_idx >= max_batches:
@@ -121,6 +121,8 @@ def train(
     criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(imbalance, device=device))
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-5)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs)
+    scaler = torch.amp.GradScaler("cuda")
+
 
     # --- torchmetrics objects reused each epoch ------------------------
     auc_metric = BinaryAUROC(thresholds=256).to(device)
@@ -131,7 +133,7 @@ def train(
         train_ds,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=16,
+        num_workers=8,
         pin_memory=True,
         persistent_workers=True,
         prefetch_factor=4
@@ -149,7 +151,7 @@ def train(
         # ---- training --------------------------------------------------
         _, global_step = run_epoch(
             model, train_loader, criterion, optimizer,
-            auc_metric, writer, "train",
+            auc_metric, scaler, writer, "train",
             epoch, device, global_step
         )
 
@@ -157,7 +159,7 @@ def train(
         with torch.no_grad():
             run_epoch(
                 model, val_loader, criterion, None,
-                auc_metric, writer, "val",
+                auc_metric, scaler, writer, "val",
                 epoch, device, global_step
             )
 
