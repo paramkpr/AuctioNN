@@ -207,7 +207,7 @@ if __name__ == "__main__":
         model           = model,
         train_ds        = train_ds,
         val_ds          = val_ds,
-        batch_size      = 2**12,    # fits on A100‑40GB with mixed precision
+        batch_size      = 2**15,    # fits on A100‑40GB with mixed precision
         num_epochs      = 10,
         pos_neg_ratio   = 4,         # 1 positive : 4 negatives sampler
         log_dir         = "./runs/wad/" + datetime.now().strftime("%Y%m%d_%H%M%S"),
