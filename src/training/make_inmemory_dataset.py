@@ -32,7 +32,7 @@ def tensors_from_recordbatch(rb):
 
 def process_split(split_dir: Path, out_file: Path):
     ds_split = ds.dataset(split_dir, format="parquet")
-    scanner  = ds_split.scanner(columns=ALL_COLS)
+    scanner  = ds_split.scan(columns=ALL_COLS)
 
     cats, nums, labels = [], [], []
     total_rows = 0
