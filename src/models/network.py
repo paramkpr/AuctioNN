@@ -90,7 +90,7 @@ class ImpressionConversionNetwork(nn.Module):
         )
 
         for i, emb in enumerate(self.wide_embeddings):
-            wide_logits += emb(categorical[:, i : i + 1])  # Shape: (B, 1)
+            wide_logits += emb(categorical[:, i]).unsqueeze(1)  # Shape: (B, 1)
 
         # Deep part
         deep_embeddings = [
