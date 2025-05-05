@@ -69,13 +69,14 @@ def run_epoch(
             optimizer.zero_grad(set_to_none=True)
 
         # ---- metrics ----------------------------------------------------
-        running_loss += loss.item() * y.size(0)
         preds  = torch.sigmoid(logits.detach())
         auc_metric.update(preds, y.int())
         # ap_metric.update(preds_cpu, labels_cpu.int())
 
         # ---- tensorboard per-100 ------------------------------------------
         if global_step % 100 == 0:
+            running_loss += loss.item() * y.size(0)
+
             writer.add_scalar(f"{phase}/batch_loss", loss.item(), global_step)
             if is_train:
                 for i, pg in enumerate(optimizer.param_groups):
@@ -133,16 +134,16 @@ def train(
         train_ds,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=16,
+        num_workers=0,
         pin_memory=True,
         persistent_workers=True,
-        prefetch_factor=4
+        prefetch_factor=4,
     )
     val_loader = DataLoader(
         val_ds,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=4,
+        num_workers=0,
         pin_memory=True,
     )
 
@@ -203,8 +204,8 @@ if __name__ == "__main__":
         model           = model,
         train_ds        = train_ds,
         val_ds          = val_ds,
-        batch_size      = 131_072 * 2,    # fits on A100‑40GB with mixed precision
+        batch_size      = 131_072 * 4,    # fits on A100‑40GB with mixed precision
         num_epochs      = 10,
         pos_neg_ratio   = 4,         # 1 positive : 4 negatives sampler
-        log_dir         = "./runs/wad" + datetime.now().strftime("%Y%m%d_%H%M%S"),
+        log_dir         = "./runs/wad/" + datetime.now().strftime("%Y%m%d_%H%M%S"),
     )
