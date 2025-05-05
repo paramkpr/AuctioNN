@@ -40,7 +40,7 @@ def run_epoch(
     criterion: nn.Module,
     optimizer: Optional[torch.optim.Optimizer],
     auc_metric: BinaryAUROC,
-    ap_metric: BinaryAveragePrecision,
+    # ap_metric: BinaryAveragePrecision,
     writer: SummaryWriter,
     phase: str,
     epoch: int,
@@ -70,10 +70,9 @@ def run_epoch(
 
         # ---- metrics ----------------------------------------------------
         running_loss += loss.item() * y.size(0)
-        preds_cpu  = torch.sigmoid(logits.detach()).cpu()
-        labels_cpu = y.detach().cpu()
-        auc_metric.update(preds_cpu, labels_cpu.int())
-        ap_metric.update(preds_cpu, labels_cpu.int())
+        preds  = torch.sigmoid(logits.detach())
+        auc_metric.update(preds, y.int())
+        # ap_metric.update(preds_cpu, labels_cpu.int())
 
         # ---- tensorboard per-100 ------------------------------------------
         if global_step % 100 == 0:
@@ -93,14 +92,14 @@ def run_epoch(
     # ---- epoch‑level summaries ----------------------------------------
     epoch_loss = running_loss / (len(dataloader.dataset))
     epoch_auc = auc_metric.compute().item()
-    epoch_ap = ap_metric.compute().item()
+    # epoch_ap = ap_metric.compute().item()
 
     writer.add_scalar(f"{phase}/epoch_loss", epoch_loss, epoch)
     writer.add_scalar(f"{phase}/epoch_auc", epoch_auc, epoch)
-    writer.add_scalar(f"{phase}/epoch_pr_auc", epoch_ap, epoch)
+    # writer.add_scalar(f"{phase}/epoch_pr_auc", epoch_ap, epoch)
 
     auc_metric.reset()
-    ap_metric.reset()
+    # ap_metric.reset()
     return epoch_loss, global_step
 
 
@@ -124,8 +123,8 @@ def train(
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs)
 
     # --- torchmetrics objects reused each epoch ------------------------
-    auc_metric = BinaryAUROC(thresholds=256).to("cpu")
-    ap_metric  = BinaryAveragePrecision().to("cpu")
+    auc_metric = BinaryAUROC(thresholds=256).to(device)
+    # ap_metric  = BinaryAveragePrecision().to("cpu")
 
     # --- dataloaders ---------------------------------------------------
     train_loader = DataLoader(
@@ -150,7 +149,7 @@ def train(
         # ---- training --------------------------------------------------
         _, global_step = run_epoch(
             model, train_loader, criterion, optimizer,
-            auc_metric, ap_metric, writer, "train",
+            auc_metric, writer, "train",
             epoch, device, global_step
         )
 
@@ -158,7 +157,7 @@ def train(
         with torch.no_grad():
             run_epoch(
                 model, val_loader, criterion, None,
-                auc_metric, ap_metric, writer, "val",
+                auc_metric, writer, "val",
                 epoch, device, global_step
             )
 
