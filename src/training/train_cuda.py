@@ -134,16 +134,16 @@ def train(
         train_ds,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=0,
+        num_workers=16,
         pin_memory=True,
-        # persistent_workers=True,
-        # prefetch_factor=4,
+        persistent_workers=True,
+        prefetch_factor=4,
     )
     val_loader = DataLoader(
         val_ds,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=0,
+        num_workers=8,
         pin_memory=True,
     )
 
@@ -204,7 +204,7 @@ if __name__ == "__main__":
         model           = model,
         train_ds        = train_ds,
         val_ds          = val_ds,
-        batch_size      = 131_072 * 4,    # fits on A100‑40GB with mixed precision
+        batch_size      = 2**14,    # fits on A100‑40GB with mixed precision
         num_epochs      = 10,
         pos_neg_ratio   = 4,         # 1 positive : 4 negatives sampler
         log_dir         = "./runs/wad/" + datetime.now().strftime("%Y%m%d_%H%M%S"),
