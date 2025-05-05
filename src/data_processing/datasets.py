@@ -6,16 +6,19 @@ import pyarrow.dataset as ds
 from torch.utils.data import IterableDataset
 from typing import List
 
+
 class AuctionDataset(Dataset):
     """
     PyTorch Dataset loading pre-processed NumPy arrays. Optimized for speed.
 
     Loads data directly from .npy files created by apply_preprocessors_to_split.
     """
-    def __init__(self,
-                 processed_data_dir: str,
-                 split_name: str # e.g., 'train', 'val', 'test'
-                 ):
+
+    def __init__(
+        self,
+        processed_data_dir: str,
+        split_name: str,  # e.g., 'train', 'val', 'test'
+    ):
         """
         Args:
             processed_data_dir (str): Directory containing the processed .npy files.
@@ -23,7 +26,9 @@ class AuctionDataset(Dataset):
         """
         super().__init__()
 
-        cat_path = os.path.join(processed_data_dir, f"{split_name}_categorical_data.npy")
+        cat_path = os.path.join(
+            processed_data_dir, f"{split_name}_categorical_data.npy"
+        )
         num_path = os.path.join(processed_data_dir, f"{split_name}_numerical_data.npy")
         tgt_path = os.path.join(processed_data_dir, f"{split_name}_target_data.npy")
 
@@ -34,24 +39,30 @@ class AuctionDataset(Dataset):
 
         try:
             # Use memory mapping for potentially large arrays
-            self.categorical_data = np.load(cat_path, mmap_mode='r')
-            self.numerical_data = np.load(num_path, mmap_mode='r')
-            self.target_data = np.load(tgt_path, mmap_mode='r')
+            self.categorical_data = np.load(cat_path, mmap_mode="r")
+            self.numerical_data = np.load(num_path, mmap_mode="r")
+            self.target_data = np.load(tgt_path, mmap_mode="r")
         except FileNotFoundError as e:
-            print(f"ERROR: Failed to load pre-processed .npy file. "
-                  f"Ensure files exist in '{processed_data_dir}'. Details: {e}")
+            print(
+                f"ERROR: Failed to load pre-processed .npy file. "
+                f"Ensure files exist in '{processed_data_dir}'. Details: {e}"
+            )
             raise
 
         # --- Basic Shape Validation ---
         n_samples = len(self.target_data)
-        if not (len(self.categorical_data) == n_samples and len(self.numerical_data) == n_samples):
-             raise ValueError(f"Loaded NumPy arrays for split '{split_name}' have mismatched lengths.")
+        if not (
+            len(self.categorical_data) == n_samples
+            and len(self.numerical_data) == n_samples
+        ):
+            raise ValueError(
+                f"Loaded NumPy arrays for split '{split_name}' have mismatched lengths."
+            )
 
         print(f"Dataset initialized for '{split_name}'. Number of samples: {n_samples}")
         print(f"  Categorical shape: {self.categorical_data.shape}")
         print(f"  Numerical shape:   {self.numerical_data.shape}")
         print(f"  Target shape:      {self.target_data.shape}")
-
 
     def __len__(self):
         """Returns the total number of samples in the dataset."""
@@ -84,11 +95,11 @@ class AuctionDataset(Dataset):
         # Ensure correct types
         categorical_tensor = torch.from_numpy(cat_sample.astype(np.int64)).long()
         numerical_tensor = torch.from_numpy(num_sample.astype(np.float32)).float()
-        target_tensor = torch.tensor(target_sample, dtype=torch.float32) # Target was already float32
+        target_tensor = torch.tensor(
+            target_sample, dtype=torch.float32
+        )  # Target was already float32
 
         return categorical_tensor, numerical_tensor, target_tensor
-    
-
 
 
 class ParquetAuctionDataset(IterableDataset):
@@ -96,11 +107,15 @@ class ParquetAuctionDataset(IterableDataset):
     Streams (cat, num, target) batches directly from the Parquet directory that
     `apply_and_save_preprocessed_data` produced.  No 8GB .npy arrays needed.
     """
-    def __init__(self, split_dir: str,
-                 cat_cols: List[str] | None = None,
-                 num_cols: List[str] | None = None,
-                 target_col: str = "conversion_flag",
-                 batch_rows: int = 8192):
+
+    def __init__(
+        self,
+        split_dir: str,
+        cat_cols: List[str] | None = None,
+        num_cols: List[str] | None = None,
+        target_col: str = "conversion_flag",
+        batch_rows: int = 8192,
+    ):
         super().__init__()
         self.ds = ds.dataset(split_dir, format="parquet")
         schema_names = self.ds.schema.names
@@ -113,15 +128,21 @@ class ParquetAuctionDataset(IterableDataset):
         self.batch_rows = batch_rows
 
     def __iter__(self):
-        scanner = self.ds.scanner(columns=self.columns,
-                                  batch_size=self.batch_rows,
-                                  use_threads=True)
-        for record_batch in scanner.to_batches():
-            arr = record_batch.to_pandas()
+        scanner = self.ds.scanner(
+            columns=self.columns, batch_size=self.batch_rows, use_threads=True
+        )
+        for rb in scanner.to_batches():
+            cat_np = np.column_stack(
+                [rb[col].to_numpy(zero_copy_only=False) for col in self.cat_cols]
+            )
+            num_np = np.column_stack(
+                [rb[col].to_numpy(zero_copy_only=False) for col in self.num_cols]
+            )
+            tgt_np = rb[self.target_col].to_numpy()
 
-            cats = torch.from_numpy(arr[self.cat_cols].values).long()
-            nums = torch.from_numpy(arr[self.num_cols].values).float()
-            target = torch.from_numpy(arr[[self.target_col]].values).float()
+            # rb may already have exactly batch_rows rows; if not, you can reshape
+            cats = torch.from_numpy(cat_np).long()
+            nums = torch.from_numpy(num_np).float()
+            target = torch.from_numpy(tgt_np).float().unsqueeze(1)
 
-            for i in range(len(cats)):          # yield row‑wise = map‑style dataset
-                yield cats[i], nums[i], target[i]
+            yield cats, nums, target  # one full batch ⇒ one DataLoader step

@@ -185,3 +185,15 @@ We have an online model where we have a stream of impressions from an ad exchang
 Our model represents a marketing company that has a group of advertisers and places bids on their behalf on the ad exchange.
 
 We have a stream of impressions and a stream of conversions.
+
+
+
+# Training on VM 
+# 1) Convert Parquet → tensors (done only once)
+python prepare_inmemory_tensors.py
+
+# 2) Start TensorBoard (optional)
+tensorboard --logdir runs/wad --port 6006 &
+
+# 3) Train
+python train_wide_deep.py

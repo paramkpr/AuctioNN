@@ -1,0 +1,197 @@
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
+from torch.utils.tensorboard import SummaryWriter
+from torchmetrics.classification import BinaryAUROC, BinaryAveragePrecision
+from tqdm.auto import tqdm
+import os
+from typing import Optional
+
+
+class InMemoryDataset(Dataset):
+    """
+    Wraps three pre-loaded tensors:
+        cat  – LongTensor  (N, 9)
+        num  – FloatTensor (N, 8)
+        label – FloatTensor (N,)
+    """
+    def __init__(self, tensor_cache_path: str):
+        obj = torch.load(tensor_cache_path, map_location="cpu")
+        self.cat, self.num, self.label = obj["cat"], obj["num"], obj["label"]
+
+    def __len__(self):
+        return self.label.size(0)
+
+    def __getitem__(self, idx):
+        return self.cat[idx], self.num[idx], self.label[idx]
+
+
+def make_ratio_sampler(labels: torch.Tensor, k: int = 4) -> WeightedRandomSampler:
+    """Return a sampler that draws 1 pos for every k negs (approx)."""
+    pos_weight = 1.0
+    neg_weight = 1.0 / k
+    weights = torch.where(labels == 1, pos_weight, neg_weight)
+    return WeightedRandomSampler(weights, num_samples=len(labels), replacement=True)
+
+
+def run_epoch(
+    model: nn.Module,
+    dataloader: DataLoader,
+    criterion: nn.Module,
+    optimizer: Optional[torch.optim.Optimizer],
+    auc_metric: BinaryAUROC,
+    ap_metric: BinaryAveragePrecision,
+    writer: SummaryWriter,
+    phase: str,
+    epoch: int,
+    device: torch.device,
+    global_step: int,
+    max_batches: Optional[int] = None,
+):
+    """One full pass over `dataloader` (train or val)."""
+    is_train = optimizer is not None
+    model.train(is_train)
+
+    running_loss = 0.0
+    pbar = tqdm(enumerate(dataloader, 1), total=len(dataloader), disable=os.getenv("CI"))
+    for batch_idx, (cat, num, y) in pbar:
+        cat, num, y = cat.to(device), num.to(device), y.to(device)
+
+        with torch.amp.autocast("cuda"):
+            logits = model(cat, num, return_logits=True)
+            loss = criterion(logits, y)
+
+        if is_train:
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            optimizer.step()
+
+        # ---- metrics ----------------------------------------------------
+        running_loss += loss.item() * y.size(0)
+        preds = torch.sigmoid(logits.detach())
+        auc_metric.update(preds, y.int())
+        ap_metric.update(preds, y.int())
+
+        # ---- tensorboard per‑batch -------------------------------------
+        writer.add_scalar(f"{phase}/batch_loss", loss.item(), global_step)
+        if is_train:
+            for i, pg in enumerate(optimizer.param_groups):
+                writer.add_scalar(f"lr/group_{i}", pg["lr"], global_step)
+
+        pbar.set_description(
+            f"{phase}  Epoch {epoch}  Loss {loss.item():.4f}"
+        )
+
+        global_step += 1
+        if max_batches and batch_idx >= max_batches:
+            break
+
+    # ---- epoch‑level summaries ----------------------------------------
+    epoch_loss = running_loss / (len(dataloader.dataset))
+    epoch_auc = auc_metric.compute().item()
+    epoch_ap = ap_metric.compute().item()
+
+    writer.add_scalar(f"{phase}/epoch_loss", epoch_loss, epoch)
+    writer.add_scalar(f"{phase}/epoch_auc", epoch_auc, epoch)
+    writer.add_scalar(f"{phase}/epoch_pr_auc", epoch_ap, epoch)
+
+    auc_metric.reset()
+    ap_metric.reset()
+    return epoch_loss, global_step
+
+
+def train(
+    model: nn.Module,
+    train_ds: Dataset,
+    val_ds: Dataset,
+    batch_size: int = 65_536,
+    num_epochs: int = 5,
+    pos_neg_ratio: int = 4,
+    log_dir: str = "./runs/wide_deep",
+    device: str = "cuda" if torch.cuda.is_available() else "cpu",
+):
+    device = torch.device(device)
+    model.to(device)
+
+    writer = SummaryWriter(log_dir)
+    criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(pos_neg_ratio, device=device))
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-5)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs)
+
+    # --- torchmetrics objects reused each epoch ------------------------
+    auc_metric = BinaryAUROC().to(device)
+    ap_metric = BinaryAveragePrecision().to(device)
+
+    # --- dataloaders ---------------------------------------------------
+    train_sampler = make_ratio_sampler(train_ds.labels, k=pos_neg_ratio)
+    train_loader = DataLoader(
+        train_ds,
+        batch_size=batch_size,
+        sampler=train_sampler,
+        num_workers=8,
+        pin_memory=True,
+        persistent_workers=True,
+    )
+    val_loader = DataLoader(
+        val_ds,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=4,
+        pin_memory=True,
+    )
+
+    global_step = 0
+    for epoch in range(num_epochs):
+        # ---- training --------------------------------------------------
+        _, global_step = run_epoch(
+            model, train_loader, criterion, optimizer,
+            auc_metric, ap_metric, writer, "train",
+            epoch, device, global_step
+        )
+
+        # ---- validation ------------------------------------------------
+        with torch.no_grad():
+            run_epoch(
+                model, val_loader, criterion, None,
+                auc_metric, ap_metric, writer, "val",
+                epoch, device, global_step
+            )
+
+        scheduler.step()
+
+        # ---- save checkpoint ------------------------------------------
+        ckpt_path = os.path.join(log_dir, f"epoch_{epoch}.pt")
+        torch.save({"epoch": epoch,
+                    "model_state": model.state_dict(),
+                    "optim_state": optimizer.state_dict()}, ckpt_path)
+
+    writer.close()
+
+# ------------------------------------------------------------
+# 4️⃣  Usage example
+# ------------------------------------------------------------
+if __name__ == "__main__":
+    from models.network import ImpressionConversionNetwork   # replace with your module path
+
+    CARDINALITIES = [89, 5, 212, 191, 70, 521, 74, 7679, 28]
+
+    model = ImpressionConversionNetwork(
+        categorical_cardinalities=CARDINALITIES,
+        numeric_dim=8,
+        deep_embedding_dim=16,
+        mlp_hidden=(128, 64),
+        dropout=0.2,
+    )
+
+    train_ds = InMemoryDataset("processed/train_tensor_cache.pt")
+    val_ds   = InMemoryDataset("processed/val_tensor_cache.pt")
+
+    train(
+        model           = model,
+        train_ds        = train_ds,
+        val_ds          = val_ds,
+        batch_size      = 65_536,    # fits on A100‑40GB with mixed precision
+        num_epochs      = 10,
+        pos_neg_ratio   = 4,         # 1 positive : 4 negatives sampler
+        log_dir         = "./runs/wad",
+    )

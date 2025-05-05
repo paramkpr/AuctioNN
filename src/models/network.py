@@ -1,105 +1,109 @@
 import torch
 import torch.nn as nn
 from collections import OrderedDict
+from typing import Sequence
 
 
-class AuctionNetwork(nn.Module):
+class ImpressionConversionNetwork(nn.Module):
     """
-    Neural Network for predicting conversion probability based on impression features.
+    A wide and deep network for conversion-rate prediction.
+
+    Expected input per batch:
+    ------------------------
+    - categorical: LongTensor (B, N_cat)  # cat_0 ... cat_8 as *ordinal* ID
+    - numerical: FloatTensor (B, N_num)   # num_0 ... num_7 already scaled
     
-    Architecture:
-    - Embedding layers for categorical features
-    - Concatenation of embeddings and numerical features
-    - Sequential hidden layers (Linear → BatchNorm → ReLU → Dropout)
-    - Single output logit (use with BCEWithLogitsLoss)
+    Returns
+    -------
+    - p: FloatTensor (B,) predicted conversion rate
     """
+
     def __init__(
         self,
-        category_sizes: dict[str, int],
-        num_numerical_features: int,
-        embedding_dim: int = 32,
-        hidden_dims: list[int] = [128, 64],
-        dropout_rate: float = 0.3
-    ):
-        """
-        Initialize the auction network.
-        
-        Args:
-            category_sizes: Dictionary mapping category names to number of unique values
-            num_numerical_features: Number of numerical features in the input
-            embedding_dim: Dimension of embedding vectors for categorical features
-            hidden_dims: List of hidden layer dimensions
-            dropout_rate: Dropout probability for regularization
-        """
+        categorical_cardinalities: list[int],
+        numeric_dim: int = 8,
+        deep_embedding_dim: int = 16,
+        mlp_hidden: Sequence[int] = (124, 64),
+        dropout: float = 0.2,
+    ) -> None:
         super().__init__()
 
-        # Input validation
-        if not category_sizes:
-            raise ValueError("category_sizes dictionary cannot be empty")
-        if num_numerical_features < 0:
-            raise ValueError("num_numerical_features cannot be negative")
+        self.n_cat = len(categorical_cardinalities)
+        self.n_num = numeric_dim
 
-        self.category_sizes = category_sizes
-        self.num_numerical_features = num_numerical_features
+        # Wide part
+        self.wide_embeddings = nn.ModuleList(
+            [
+                nn.Embedding(cardinality, 1)
+                for cardinality in categorical_cardinalities
+            ]
+        )
 
-        # Create embedding layers for each categorical feature
-        self.embedding_layers = nn.ModuleDict({
-            name: nn.Embedding(
-                num_embeddings=max(size, 2),
-                embedding_dim=embedding_dim,
-                padding_idx=0
-            ) for name, size in category_sizes.items()
-        })
+        # Deep part
+        self.deep_embeddings = nn.ModuleList(
+            [
+                nn.Embedding(cardinality, deep_embedding_dim)
+                for cardinality in categorical_cardinalities
+            ]
+        )
         
-        # Calculate input dimension for the first hidden layer
-        total_embedding_dim = embedding_dim * len(category_sizes)
-        input_dim = total_embedding_dim + num_numerical_features
 
-        # Build sequential hidden layers
-        layers = []
-        for i, hidden_dim in enumerate(hidden_dims):
-            layers.extend([
-                (f'linear_{i}', nn.Linear(input_dim, hidden_dim)),
-                (f'batchnorm_{i}', nn.BatchNorm1d(hidden_dim)),
-                (f'relu_{i}', nn.ReLU()),
-                (f'dropout_{i}', nn.Dropout(dropout_rate))
-            ])
-            input_dim = hidden_dim  # Update input dim for next layer
-            
-        self.hidden_layers = nn.Sequential(OrderedDict(layers))
-        
-        # Output layer produces a single logit
-        self.output_layer = nn.Linear(input_dim, 1)
+        # Deep MLP
+        deep_input_dim = self.n_cat * deep_embedding_dim + self.n_num
+        mlp_layers: list[nn.Module] = []
+        prev = deep_input_dim
+        for h in mlp_hidden:
+            mlp_layers.append(nn.Linear(prev, h))
+            mlp_layers.append(nn.ReLU())
+            mlp_layers.append(nn.Dropout(dropout))
+            prev = h
+        mlp_layers.append(nn.Linear(prev, 1))  # final logit
+        self.deep_mlp = nn.Sequential(*mlp_layers)
 
-    def forward(self, categorical_data: torch.LongTensor, numerical_data: torch.FloatTensor) -> torch.Tensor:
+        # Initialise embeddings with small std so logits start near 0
+        for emb in list(self.wide_embeddings) + list(self.deep_embeddings):
+            nn.init.normal_(emb.weight, mean=0.0, std=0.01)
+
+    
+    # TODO: wrap in torch.cuda.amp.autocast() for NVIDIA training
+    def forward(
+        self,
+        categorical: torch.Tensor,
+        numerical: torch.Tensor,
+        return_logits: bool = False,
+    ) -> torch.Tensor:
         """
-        Forward pass through the network.
-        
-        Args:
-            categorical_data: Tensor of categorical feature indices [batch_size, num_categorical_features]
-            numerical_data: Tensor of numerical features [batch_size, num_numerical_features]
-            
-        Returns:
-            Logits tensor [batch_size, 1]
-        """
-        # Validate input dimensions
-        if categorical_data.shape[1] != len(self.category_sizes):
-            raise ValueError(f"Expected {len(self.category_sizes)} categorical features, got {categorical_data.shape[1]}")
-        if numerical_data.shape[1] != self.num_numerical_features:
-            raise ValueError(f"Expected {self.num_numerical_features} numerical features, got {numerical_data.shape[1]}")
+        Parameters
+        ---------- 
+        categorical : LongTensor (B, N_CAT)
+        numeric     : FloatTensor (B, N_NUM)
+        return_logits : set True to bypass sigmoid for BCEWithLogitsLoss
 
-        # Process embeddings
-        embeddings = []
-        for i, name in enumerate(self.category_sizes):
-            feature_indices = categorical_data[:, i]
-            embedded = self.embedding_layers[name](feature_indices)
-            embeddings.append(embedded)
-            
-        # Concatenate embeddings and numerical features
-        x = torch.cat(embeddings + [numerical_data], dim=1)
-        
-        # Pass through hidden layers
-        x = self.hidden_layers(x)
-        
-        # Output layer
-        return self.output_layer(x)
+        Returns
+        -------
+        Tensor (B,) – probabilities or raw logits
+        """
+
+        # Wide part
+        wide_logits = torch.zeros(
+            categorical.size(0), 1, device=categorical.device, dtype=torch.float32
+        )
+
+        for i, emb in enumerate(self.wide_embeddings):
+            wide_logits += emb(categorical[:, i : i + 1])  # Shape: (B, 1)
+
+        # Deep part
+        deep_embeddings = [
+            emb(categorical[:, i]) for i, emb in enumerate(self.deep_embeddings)
+        ]  # List of (B, D) tensors
+        deep_input = torch.cat(deep_embeddings + [numerical], dim=1)  # Shape: (B, N_cat * D + N_num)
+        deep_logits = self.deep_mlp(deep_input)  # Shape: (B, 1)
+
+        # Combine wide and deep parts
+        logits = wide_logits + deep_logits  # Shape: (B, 1)
+
+        # Apply sigmoid if not returning logits
+        if not return_logits:
+            logits = torch.sigmoid(logits)
+
+        return logits

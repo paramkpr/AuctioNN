@@ -531,6 +531,51 @@ described in Table~\ref{tab:data_columns}. At this point we have
 \end{tabular}
 \end{table}
 
+Once we process the data we save the encoders and scalers to disk to persist. We will see why later. 
+
+The processed data roughly coressponds to the cleaned data with one notable change. We encode the time features
+ (hour and day of week) as cyclical features. This is done to ensure that the model can learn the periodic nature of these features.
+The cyclical encoding is done using the following formula:
+\[
+  \text{feature\_name} = \sin\left(\frac{2\pi \cdot \text{feature\_name}}{\text{max\_value}}\right)
+  \text{ and } 
+  \text {feature\_name} = \cos\left(\frac{2\pi \cdot \text{feature\_name}}{\text{max\_value}}\right)
+\]
+
+The processed data shape is described in Table~\ref{tab:data_columns_processed}.
+The processed data is saved to the data/processed directory.
+\begin{table}[H]
+  \centering
+  \caption{DataFrame Structure and Feature Details after preprocessing}
+  \label{tab:data_columns_processed}
+  \begin{tabular}{ll@{\quad\quad}l@{\quad\quad\quad}l}
+  \toprule
+  \# & \textbf{Column} & \textbf{Dtype} & \textbf{Details} \\
+  \midrule
+  1 & \texttt{cat\_0} & int64 & campaign ID \\
+  2 & \texttt{cat\_1} & int64 & cnxn type \\
+  3 & \texttt{cat\_2} & int64 & dma \\
+  4 & \texttt{cat\_3} & int64 & country \\
+  5 & \texttt{cat\_4} & int64 & prizm premier code \\
+  6 & \texttt{cat\_5} & int64 & ua browser \\
+  7 & \texttt{cat\_6} & int64 & ua device brand \\
+  8 & \texttt{cat\_7} & int64 & ua device family \\
+  9 & \texttt{cat\_8} & int64 & ua os \\
+  \midrule
+  10 & \texttt{num\_0} & float64 & ua is mobile \\
+  11 & \texttt{num\_1} & float64 & ua is tablet \\
+  12 & \texttt{num\_2} & float64 & ua is pc \\
+  13 & \texttt{num\_3} & float64 & ua is bot \\
+  14 & \texttt{num\_4} & float64 & hour sin \\
+  15 & \texttt{num\_5} & float64 & hour cos \\
+  16 & \texttt{num\_6} & float64 & day sin \\
+  17 & \texttt{num\_7} & float64 & day cos \\
+  \midrule
+  18 & \texttt{conversion\_flag} & int64 & conversion flag \\
+  \bottomrule
+  \end{tabular}
+\end{table}
+
 Just as a note the category sizes when we fit the OrdinalEncoder are as follows:
 \begin{verbatim}
   {'campaign_id': 89,
@@ -543,6 +588,12 @@ Just as a note the category sizes when we fit the OrdinalEncoder are as follows:
  'ua_device_family': 7679,
  'ua_os': 28}
 \end{verbatim}
+
+Now that we have the processed data we can move on to training the network. Since the total size of the processed data is
+around ~7GB, we can load the entire dataset into memory. We decided to use a on-demand GPU VM to train the model. Batching the
+dataset to train on a workstation with 16GB of RAM required dataset batching and sharding. We can implement this in the future 
+if we need to train on larger datasets. However, for now we can skip these steps and keep our implementation simple.
+
 
 \subsection{Impression Stream}
 [WORK IN PROGRESS]
