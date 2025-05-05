@@ -219,7 +219,12 @@ def apply_preprocessors_partition(
     num_df = pd.DataFrame(index=df.index)
     for col in BOOLEAN_FEATURES:
         num_df[col] = df[col].astype(float)
-
+    # This code performs cyclical encoding of time features:
+    # - Converts hours (0-23) into circular coordinates using sin/cos
+    # - Converts days of week (0-6) into circular coordinates using sin/cos
+    # This preserves the cyclic nature of time - e.g. hour 23 is close to hour 0,
+    # and Sunday (6) is close to Monday (0). Regular numeric encoding would lose
+    # this cyclical relationship.
     hour = df["impression_hour"]
     day = df["impression_dayofweek"]
     num_df["hour_sin"] = np.sin(2 * np.pi * hour / 24.0)

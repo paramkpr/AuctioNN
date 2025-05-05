@@ -4,7 +4,7 @@ import torch
 import numpy as np
 from pathlib import Path
 
-BASE_DIR = Path("processed")           # root that holds train/ val/ test/
+BASE_DIR = Path("./data/processed")           # root that holds train/ val/ test/
 SPLITS   = ["train", "val", "test"]
 
 CAT_COLS = [f"cat_{i}" for i in range(9)]
