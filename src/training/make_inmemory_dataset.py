@@ -32,12 +32,12 @@ def tensors_from_recordbatch(rb):
 
 def process_split(split_dir: Path, out_file: Path):
     ds_split = ds.dataset(split_dir, format="parquet")
-    scanner  = ds_split.scan(columns=ALL_COLS)
+    batches = ds_split.to_batches(batch_size=ROWS_PER_CHUNK, columns=ALL_COLS)
 
     cats, nums, labels = [], [], []
     total_rows = 0
 
-    for rb in tqdm(scanner.to_batches(batch_size=ROWS_PER_CHUNK), desc=f"{split_dir.name}"):
+    for rb in tqdm(batches, desc=f"{split_dir.name}"):
         c, n, l = tensors_from_recordbatch(rb)
         cats.append(c)
         nums.append(n)
