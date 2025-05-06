@@ -35,7 +35,7 @@ def bootstrap_campaigns(
     random values for the campaign parameters. We provide a seed for reproducibility.
     """
     # Load the campaign ids from the clean data
-    campaign_ids = [ 8334, 13411, 13505, 14108, 14213, 14546, 16007, 17562, 18997,
+    campaign_ids = [8334, 13411, 13505, 14108, 14213, 14546, 16007, 17562, 18997,
         19441, 19442, 40582, 41142, 42252, 42300, 42388, 42485, 42488,
         42517, 42540, 42569, 42580, 42593, 42751, 42838, 42844, 42915,
         42943, 42993, 43013, 43015, 43102, 43247, 43249, 43423, 43633,
@@ -51,7 +51,7 @@ def bootstrap_campaigns(
     # Create a list of Campaign objects
     campaigns = []
     for campaign_id in campaign_ids:
-        value_per_conv = rng.uniform(1.0, 10.0) # $ per conversion
+        value_per_conv = rng.uniform(20.0, 30.0) # $ per conversion
         target_cpa = rng.uniform(1.1 * value_per_conv, 3.0 * value_per_conv)
         budget_remaining = rng.uniform(500.0, 5000.0)  # total $ budget
         ad_stock = defaultdict(int)

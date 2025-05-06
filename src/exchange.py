@@ -16,7 +16,9 @@ from pathlib import Path
 from typing import Iterator
 
 import numpy as np
-import pyarrow.dataset as ds
+import pyarrow.parquet as pq # Need this for direct file reading
+import pyarrow as pa
+from pathlib import Path
 import pandas as pd
 
 
@@ -31,8 +33,8 @@ class Impression:
 
 class ImpressionGenerator:
     """
-    Yields Impression objects drawn from a directory of Parquet files using PyArrow Datasets.
-    The directory may contain arbitrarily large files.
+    Yields Impression objects randomly sampled row-by-row from a directory
+    containing Parquet files, potentially organized in subdirectories (like Hive partitions).
     """
 
     def __init__(
@@ -41,65 +43,135 @@ class ImpressionGenerator:
         seed: int | None = 42,
         num_users: int | None = None, # number of users the market provides
     ) -> None:
-        self._ds = ds.dataset(parquet_dir_path, format="parquet")
-        # Eagerly load fragments and their row counts for efficient indexing
-        self._fragments = list(self._ds.get_fragments())
-        if not self._fragments:
-             raise ValueError(f"No Parquet data found in directory: {parquet_dir_path}")
-        self._fragment_row_counts = [frag.count_rows() for frag in self._fragments]
-        self._cum_fragment_rows = np.cumsum([0] + self._fragment_row_counts)
-        self._num_rows = self._cum_fragment_rows[-1]
+        self._base_path = Path(parquet_dir_path)
         self._rng = np.random.default_rng(seed)
         self._num_users = num_users
-        self._schema_names = self._ds.schema.names # Cache schema names
+
+        # 1. Find all part-*.parquet files recursively
+        # Use rglob to search recursively
+        file_paths = list(self._base_path.rglob("part*.parquet"))
+        if not file_paths:
+            raise ValueError(f"No part*.parquet files found under {parquet_dir_path}")
+
+        # 2. Get row counts for each file and store (path, count)
+        self._file_info: list[tuple[Path, int]] = []
+        total_rows = 0
+        print(f"Found {len(file_paths)} parquet files. Reading metadata...")
+        for fpath in file_paths:
+            try:
+                pf = pq.ParquetFile(fpath)
+                num_rows = pf.metadata.num_rows
+                if num_rows > 0:
+                    self._file_info.append((fpath, num_rows))
+                    total_rows += num_rows
+                else:
+                    print(f"Skipping empty file: {fpath}")
+            except Exception as e:
+                print(f"Warning: Could not read metadata for {fpath}: {e}")
+
+        if not self._file_info:
+             raise ValueError(f"No non-empty Parquet files with readable metadata found under {parquet_dir_path}")
+
+        self._num_rows = total_rows
+        # 3. Calculate cumulative row counts for mapping index to file
+        self._cum_file_rows = np.cumsum([0] + [count for _, count in self._file_info])
+        print(f"Initialized ImpressionGenerator with {self._num_rows} total rows across {len(self._file_info)} files.")
+
 
     # –– public –––––––––––––––––––––––––––––––––––––––––––––––––––––––
     def stream(
         self,
         shuffle: bool = True,
-        # rowgroup_cache parameter removed as caching is less direct with datasets/fragments
     ) -> Iterator[Impression]:
         """
-        Generator that yields one `Impression` at a time from the dataset.
+        Generator that yields one `Impression` at a time, randomly sampled
+        from the underlying Parquet files.
 
         Parameters
         ----------
-        shuffle: return rows in a random order (default True).
+        shuffle: return rows in a random order (default True). If False,
+                 iterates through files sequentially, then rows within files.
+                 Note: Sequential order depends on file system listing order.
         """
         order = (
             self._rng.permutation(self._num_rows) if shuffle else np.arange(self._num_rows)
         )
 
+        # Cache the last opened file and its row groups to avoid repeated reads
+        last_pf: pq.ParquetFile | None = None
+        last_filepath: Path | None = None
+        last_rg_tables: dict[int, pa.Table] = {}
+
+
         for absolute_idx in order:
-            frag_idx, offset = self._fragment_for_index(absolute_idx)
-            current_fragment = self._fragments[frag_idx]
+            # 4. Map global index to file index and offset within that file
+            file_idx, offset_in_file = self._file_for_index(absolute_idx)
+            filepath, _ = self._file_info[file_idx]
 
-            # Read the specific row efficiently from the fragment
-            # fragment.head(N) reads the first N rows, slice extracts the desired row
-            row_table = current_fragment.head(offset + 1).slice(offset, 1)
-            row = row_table.to_pydict()
+            # 5. Read the specific row from the file
+            try:
+                # Open file only if it's different from the last one
+                if filepath != last_filepath:
+                    # print(f"Opening file: {filepath}") # Debugging
+                    last_pf = pq.ParquetFile(filepath)
+                    last_filepath = filepath
+                    last_rg_tables = {} # Clear row group cache
 
-            # Convert single-value lists → scalars, excluding campaign_id
-            features = {k: v[0] for k, v in row.items() if k not in {"campaign_id"}}
+                if last_pf is None: # Should not happen if file opened successfully
+                     raise RuntimeError("ParquetFile handle is None")
 
-            # Assigns a user_id to the impression if num_users is specified
-            if self._num_users is not None:
-                features["user_id"] = self._rng.choice(range(self._num_users), size=1, replace=True)[0]
+                # Find which row group the offset falls into
+                rg_idx, offset_in_rg = self._rowgroup_for_index(last_pf, offset_in_file)
 
-            yield Impression(
-                features=features,
-            )
+                # Read row group only if not cached
+                if rg_idx not in last_rg_tables:
+                    # print(f"Reading row group {rg_idx} from {filepath}") # Debugging
+                    last_rg_tables[rg_idx] = last_pf.read_row_group(rg_idx)
+
+                rg_table = last_rg_tables[rg_idx]
+
+                # Extract the specific row
+                row_table = rg_table.slice(offset_in_rg, 1)
+                row = row_table.to_pydict()
+
+                # Convert single-value lists → scalars
+                # Exclude campaign_id if it exists as a column (it shouldn't if only in path)
+                features = {k: v[0] for k, v in row.items() if k != "campaign_id"}
+
+                # Assigns a user_id to the impression if num_users is specified
+                if self._num_users is not None:
+                    features["user_id"] = self._rng.choice(range(self._num_users), size=1, replace=True)[0]
+
+                yield Impression(
+                    features=features,
+                )
+
+            except Exception as e:
+                 print(f"Error processing row {absolute_idx} (file: {filepath}, offset: {offset_in_file}): {e}")
+                 # Decide whether to continue or raise
+                 # continue # Skip problematic row/file
+
 
     # –– helpers ––––––––––––––––––––––––––––––––––––––––––––––––––––––
-    def _fragment_for_index(self, absolute_idx: int) -> tuple[int, int]:
+    def _file_for_index(self, absolute_idx: int) -> tuple[int, int]:
         """
-        Map an absolute row index → (fragment index, offset inside fragment).
+        Map an absolute row index → (file index in self._file_info, offset inside that file).
         """
-        # Find the fragment index using the precomputed cumulative row counts
-        frag_idx = np.searchsorted(self._cum_fragment_rows, absolute_idx, side="right") - 1
-        # Calculate the offset within that fragment
-        offset = absolute_idx - self._cum_fragment_rows[frag_idx]
-        return frag_idx, offset
+        # Find the file index using the precomputed cumulative row counts
+        file_idx = np.searchsorted(self._cum_file_rows, absolute_idx, side="right") - 1
+        # Calculate the offset within that file
+        offset_in_file = absolute_idx - self._cum_file_rows[file_idx]
+        return file_idx, offset_in_file
+
+    def _rowgroup_for_index(self, pf: pq.ParquetFile, offset_in_file: int) -> tuple[int, int]:
+        """
+        Map an offset within a file → (row-group index, offset inside that group).
+        """
+        # Calculate cumulative sums of row group sizes for the specific file
+        cum_rg_rows = np.cumsum([0] + [pf.metadata.row_group(i).num_rows for i in range(pf.num_row_groups)])
+        rg_idx = np.searchsorted(cum_rg_rows, offset_in_file, side="right") - 1
+        offset_in_rg = offset_in_file - cum_rg_rows[rg_idx]
+        return rg_idx, offset_in_rg
 
 
 # TODO: Refacor this into a 'Network' class maybe? or figure out a better place for it.
@@ -223,7 +295,7 @@ class Market:
         returns the result of the auction.
     """
 
-    def __init__(self, median_cpm: float = 5, # $5 CPM = $0.005 per impression
+    def __init__(self, median_cpm: float = 5.0, # $5 CPM = $0.005 per impression
                  sigma: float = 0.5,  # log-normal distribution sigma
                  seed: int = 42,  # random seed for reproducibility
                  ) -> None:
@@ -234,7 +306,10 @@ class Market:
     def _sample_price(self) -> float:
         """
         Sample a price from a log-normal distribution with the given median and sigma.
+        
         """
+        # Gamma produces right‑skew; mean ≈ $0.0065 (≈ $6.5 CPM)
+        return float(self._rng.gamma(shape=2.0, scale=0.00325))
         mu = np.log(self._median)
         return float(self._rng.lognormal(mean=mu, sigma=self._sigma))
     

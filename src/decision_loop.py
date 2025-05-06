@@ -55,6 +55,7 @@ class DecisionLoop:
             if c.budget_remaining > 0 and c.ad_stock[user_id] < self.tau
         ]
         if not elig:           # nothing to bid on → skip
+            print(f"No eligible campaigns for user {user_id}")
             return
 
         # 2. Batch model inference ─────────────────────────────────
@@ -83,9 +84,9 @@ class DecisionLoop:
             # if camp.target_cpa is not None and camp.target_cpa > 0: # Avoid division by zero
             #     score = pconv_val / camp.target_cpa
             # else:
-            # score = pconv_val * camp.value_per_conv
-            score = pconv_val
+            score = pconv_val * camp.value_per_conv
             scores.append(score)
+        
 
         best_idx = int(np.argmax(scores))
         chosen: Campaign = carriers[best_idx]
@@ -114,6 +115,7 @@ class DecisionLoop:
                 "win": won,
                 "pconv": pconv,
                 "expected_value": expected_value,
+                "utility": expected_value - market_price,
                 "budget_remaining": chosen.budget_remaining,
             }
             self.logger.log(log_data)
