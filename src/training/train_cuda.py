@@ -41,6 +41,7 @@ def run_epoch(
     optimizer: Optional[torch.optim.Optimizer],
     auc_metric: BinaryAUROC,
     scaler: torch.amp.GradScaler,
+    copy_stream: torch.cuda.Stream,
     # ap_metric: BinaryAveragePrecision,
     writer: SummaryWriter,
     phase: str,
@@ -57,7 +58,11 @@ def run_epoch(
     total_batches = len(dataloader)
     pbar = tqdm(enumerate(dataloader, 1), total=total_batches, disable=os.getenv("CI"))
     for batch_idx, (cat, num, y) in pbar:
-        cat, num, y = cat.to(device), num.to(device), y.to(device)
+        with torch.cuda.stream(copy_stream):
+            cat = cat.to(device, non_blocking=True, dtype=torch.int32)
+            num = num.to(device, non_blocking=True).half()   # fp16
+            y   = y.to(device, non_blocking=True)
+        copy_stream.wait_stream(torch.cuda.current_stream())
 
         with torch.amp.autocast("cuda"):
             logits = model(cat, num, return_logits=True)
@@ -124,32 +129,29 @@ def train(
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-5)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs)
     scaler = torch.amp.GradScaler("cuda")
+    copy_stream = torch.cuda.Stream()
 
 
     # --- torchmetrics objects reused each epoch ------------------------
     auc_metric = BinaryAUROC(thresholds=256).to(device)
     # ap_metric  = BinaryAveragePrecision().to("cpu")
 
-    train_ds.cat   = train_ds.cat.to("cuda", non_blocking=True)
-    train_ds.num   = train_ds.num.to("cuda", non_blocking=True)
-    train_ds.label = train_ds.label.to("cuda", non_blocking=True)
-
     # --- dataloaders ---------------------------------------------------
     train_loader = DataLoader(
         train_ds,
         batch_size=batch_size,
-        # shuffle=True,
+        shuffle=True,
         num_workers=0,
-        # pin_memory=True,
-        # persistent_workers=True,
-        # prefetch_factor=4,
+        pin_memory=True,
+        persistent_workers=True,
+        prefetch_factor=4,
     )
     val_loader = DataLoader(
         val_ds,
         batch_size=batch_size,
         shuffle=False,
-        # num_workers=8,
-        # pin_memory=True,
+        num_workers=8,
+        pin_memory=True,
     )
 
     global_step = 0
@@ -157,7 +159,7 @@ def train(
         # ---- training --------------------------------------------------
         _, global_step = run_epoch(
             model, train_loader, criterion, optimizer,
-            auc_metric, scaler, writer, "train",
+            auc_metric, scaler, copy_stream, writer, "train",
             epoch, device, global_step
         )
 
@@ -165,7 +167,7 @@ def train(
         with torch.no_grad():
             run_epoch(
                 model, val_loader, criterion, None,
-                auc_metric, scaler, writer, "val",
+                auc_metric, scaler, copy_stream, writer, "val",
                 epoch, device, global_step
             )
 
@@ -196,6 +198,8 @@ if __name__ == "__main__":
         mlp_hidden=(128, 64),
         dropout=0.2,
     )
+    model = torch.compile(model, mode="reduce-overhead")
+
     print("Loadded model successfully")
 
     print("Loading train and val datasets, adding to memory...")
@@ -209,7 +213,7 @@ if __name__ == "__main__":
         model           = model,
         train_ds        = train_ds,
         val_ds          = val_ds,
-        batch_size      = 2**16,    # fits on A100‑40GB with mixed precision
+        batch_size      = 2**14,    # fits on A100‑40GB with mixed precision
         num_epochs      = 10,
         pos_neg_ratio   = 4,         # 1 positive : 4 negatives sampler
         log_dir         = "./runs/wad/" + datetime.now().strftime("%Y%m%d_%H%M%S"),
