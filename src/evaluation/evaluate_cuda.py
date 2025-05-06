@@ -2,10 +2,11 @@
 """
 Evaluate a trained Wide & Deep model on the test split.
 """
+import joblib
 
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 from torchmetrics.classification import (
     BinaryAUROC,
     BinaryAveragePrecision,
@@ -16,22 +17,42 @@ import pandas as pd
 import argparse
 from pathlib import Path
 
-from data_processing.datasets import InMemoryDataset
 from models.network import ImpressionConversionNetwork
 
 # ----------------------------------------------------------------------
 # Config – adapt if your paths change
-TEST_CACHE   = "processed/test_tensor_cache.pt"
-CHECKPOINT   = "runs/wad/epoch_9.pt"     # ← pick the best epoch
-BATCH_SIZE   = 131_072                   # bigger ok for eval
-NUM_WORKERS  = 8
-EXPORT_SCORES = True                    # True → write scores.csv
+TEST_CACHE   = "data/processed/test_tensor_cache.pt"
+CHECKPOINTS   = ["runs/wad/20250505_234318/epoch_{i}.pt" for i in (0, 4, 9)]     # ← pick the best epoch
+BATCH_SIZE   = 2**16                   # bigger ok for eval
+NUM_WORKERS  = 16
+EXPORT_SCORES = False                    # True → write scores.csv
 # ----------------------------------------------------------------------
+
+class InMemoryDataset(Dataset):
+    """
+    Wraps three pre-loaded tensors:
+        cat  – LongTensor  (N, 9)
+        num  – FloatTensor (N, 8)
+        label – FloatTensor (N,)
+    """
+    def __init__(self, tensor_cache_path: str):
+        obj = torch.load(tensor_cache_path, map_location="cpu")
+        self.cat, self.num, self.label = obj["cat"], obj["num"], obj["label"]
+
+    def __len__(self):
+        return self.label.size(0)
+
+    def __getitem__(self, idx):
+        return self.cat[idx], self.num[idx], self.label[idx]
+
+
 
 # ---- Dataset wrapper -------------------------------------------------
 
 
-CARDINALITIES = [88, 4, 211, 190, 69, 520, 27, 7678, 73]
+cat_enc = joblib.load("./preprocessors/categorical_encoder.joblib")
+CARDINALITIES = [len(cat) for cat in cat_enc.categories_] # +1 → reserve row for <UNK>
+
 
 def load_model(ckpt_path: str, device: torch.device):
     model = ImpressionConversionNetwork(CARDINALITIES, numeric_dim=8, deep_embedding_dim=16)
@@ -40,6 +61,7 @@ def load_model(ckpt_path: str, device: torch.device):
     model.to(device)
     model.eval()
     return model
+
 
 @torch.no_grad()
 def evaluate(model: nn.Module, dataloader: DataLoader, device: torch.device):
@@ -89,11 +111,7 @@ def evaluate(model: nn.Module, dataloader: DataLoader, device: torch.device):
     return metrics
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--ckpt", default=CHECKPOINT, help="Path to epoch_*.pt")
-    args = parser.parse_args()
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
 
     # Dataset & loader
     test_ds = InMemoryDataset(TEST_CACHE)
@@ -105,27 +123,28 @@ def main():
         pin_memory=True,
     )
 
-    # Model
-    model = load_model(args.ckpt, device)
+    for ckpt in CHECKPOINTS:
+        # Model
+        model = load_model(ckpt, device)
 
-    # Eval
-    metrics = evaluate(model, test_loader, device)
-    print("\n=== Test metrics ===")
-    for k, v in metrics.items():
-        print(f"{k:10s}: {v:.6f}" if isinstance(v, float) else f"{k:10s}: {v}")
+        # Eval
+        metrics = evaluate(model, test_loader, device)
+        print("\n=== Test metrics ===")
+        for k, v in metrics.items():
+            print(f"{k:10s}: {v:.6f}" if isinstance(v, float) else f"{k:10s}: {v}")
 
     # TensorBoard summary
-    try:
-        from torch.utils.tensorboard import SummaryWriter
-        run_dir = Path("runs/wad_eval")
-        writer  = SummaryWriter(run_dir)
-        for k, v in metrics.items():
-            if isinstance(v, float):
-                writer.add_scalar("test/"+k, v, 0)
-        writer.close()
-        print(f"TensorBoard logs → {run_dir}")
-    except Exception as e:
-        print("TensorBoard logging skipped:", e)
+        try:
+            from torch.utils.tensorboard import SummaryWriter
+            run_dir = Path("runs/wad_eval/" + ckpt)
+            writer  = SummaryWriter(run_dir)
+            for k, v in metrics.items():
+                if isinstance(v, float):
+                    writer.add_scalar("test/"+k, v, 0)
+            writer.close()
+            print(f"TensorBoard logs → {run_dir}")
+        except Exception as e:
+            print("TensorBoard logging skipped:", e)
 
 if __name__ == "__main__":
     main()

@@ -194,11 +194,11 @@ class Market:
         returns the result of the auction.
     """
 
-    def __init__(self, median_cpm: float = 1.8, # $1.8 CPM = $0.0018 per impression
+    def __init__(self, median_cpm: float = 5, # $5 CPM = $0.005 per impression
                  sigma: float = 0.5,  # log-normal distribution sigma
                  seed: int = 42,  # random seed for reproducibility
                  ) -> None:
-        self._median = median_cpm / 1000.0      # convert CPM → per-imp $
+        self._median = median_cpm # / 1000.0      # convert CPM → per-imp $
         self._sigma = sigma
         self._rng = np.random.default_rng(seed)
 

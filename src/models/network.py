@@ -23,7 +23,7 @@ class ImpressionConversionNetwork(nn.Module):
         categorical_cardinalities: list[int],
         numeric_dim: int = 8,
         deep_embedding_dim: int = 16,
-        mlp_hidden: Sequence[int] = (124, 64),
+        mlp_hidden: Sequence[int] = (128, 64),
         dropout: float = 0.2,
     ) -> None:
         super().__init__()

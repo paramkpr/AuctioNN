@@ -120,9 +120,7 @@ def train(
 
     writer = SummaryWriter(log_dir)
     imbalance_train = (len(train_ds) - train_ds.label.sum()) / train_ds.label.sum()
-    imbalance_val = (len(val_ds) - val_ds.label.sum()) / val_ds.label.sum()
     criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(imbalance_train, device=device))
-    criterion_val = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(imbalance_val, device=device))
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-5)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs)
     scaler = torch.amp.GradScaler("cuda")
@@ -162,7 +160,7 @@ def train(
         # ---- validation ------------------------------------------------
         with torch.no_grad():
             run_epoch(
-                model, val_loader, criterion_val, None,
+                model, val_loader, criterion, None,
                 auc_metric, scaler, writer, "val",
                 epoch, device, global_step
             )
