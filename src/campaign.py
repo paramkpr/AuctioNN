@@ -26,7 +26,7 @@ class Campaign:
 
 
 def bootstrap_campaigns(
-    clean_data_path: Path = Path("./data/clean_data.parquet"),
+    clean_data_path: Path = Path("./data/cleaned/test/"),
     seed: int = 42,
 ) -> list[Campaign]:
     """
@@ -35,8 +35,16 @@ def bootstrap_campaigns(
     random values for the campaign parameters. We provide a seed for reproducibility.
     """
     # Load the campaign ids from the clean data
-    df = pd.read_parquet(clean_data_path)
-    campaign_ids = df["campaign_id"].unique()
+    campaign_ids = [ 8334, 13411, 13505, 14108, 14213, 14546, 16007, 17562, 18997,
+        19441, 19442, 40582, 41142, 42252, 42300, 42388, 42485, 42488,
+        42517, 42540, 42569, 42580, 42593, 42751, 42838, 42844, 42915,
+        42943, 42993, 43013, 43015, 43102, 43247, 43249, 43423, 43633,
+        43662, 43787, 43789, 43813, 44002, 44120, 44126, 44165, 44424,
+        44584, 44729, 44736, 44806, 44867, 44923, 45363, 45432, 45457,
+        45459, 45460, 45461, 45482, 45488, 45783, 46536, 46729, 46975,
+        47009, 47068, 47086, 47118, 47120, 47170, 47191, 47193, 47205,
+        47242, 47245, 47253, 47259, 47322, 47362, 47381, 47386, 47451,
+        47455, 47462, 47465, 47548, 47586, 47589, 47663]
 
     rng = np.random.default_rng(seed)
 

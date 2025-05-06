@@ -16,8 +16,7 @@ from pathlib import Path
 from typing import Iterator
 
 import numpy as np
-import pyarrow as pa
-import pyarrow.parquet as pq
+import pyarrow.dataset as ds
 import pandas as pd
 
 
@@ -32,80 +31,75 @@ class Impression:
 
 class ImpressionGenerator:
     """
-    Yields Impression objects drawn from a Parquet file.
-    The file may be arbitrarily large—as long as it has row groups.
+    Yields Impression objects drawn from a directory of Parquet files using PyArrow Datasets.
+    The directory may contain arbitrarily large files.
     """
 
     def __init__(
         self,
-        parquet_path: str | Path,
+        parquet_dir_path: str | Path,
         seed: int | None = 42,
         num_users: int | None = None, # number of users the market provides
     ) -> None:
-        self._pf = pq.ParquetFile(parquet_path)
-        self._num_rows = self._pf.metadata.num_rows
+        self._ds = ds.dataset(parquet_dir_path, format="parquet")
+        # Eagerly load fragments and their row counts for efficient indexing
+        self._fragments = list(self._ds.get_fragments())
+        if not self._fragments:
+             raise ValueError(f"No Parquet data found in directory: {parquet_dir_path}")
+        self._fragment_row_counts = [frag.count_rows() for frag in self._fragments]
+        self._cum_fragment_rows = np.cumsum([0] + self._fragment_row_counts)
+        self._num_rows = self._cum_fragment_rows[-1]
         self._rng = np.random.default_rng(seed)
         self._num_users = num_users
+        self._schema_names = self._ds.schema.names # Cache schema names
 
     # –– public –––––––––––––––––––––––––––––––––––––––––––––––––––––––
     def stream(
         self,
         shuffle: bool = True,
-        rowgroup_cache: bool = True,
+        # rowgroup_cache parameter removed as caching is less direct with datasets/fragments
     ) -> Iterator[Impression]:
         """
-        Generator that yields one `Impression` at a time.
+        Generator that yields one `Impression` at a time from the dataset.
 
         Parameters
         ----------
         shuffle: return rows in a random order (default True).
-        rowgroup_cache: keep the last materialised row group in memory.
         """
         order = (
             self._rng.permutation(self._num_rows) if shuffle else np.arange(self._num_rows)
         )
 
-        current_rg_idx = -1
-        current_rg_table: pa.Table | None = None
-
         for absolute_idx in order:
-            rg_idx, offset = self._rowgroup_for_index(absolute_idx)
+            frag_idx, offset = self._fragment_for_index(absolute_idx)
+            current_fragment = self._fragments[frag_idx]
 
-            # Load a new row-group only when needed
-            if rg_idx != current_rg_idx:
-                current_rg_table = self._pf.read_row_group(
-                    rg_idx,
-                )
-                current_rg_idx = rg_idx
+            # Read the specific row efficiently from the fragment
+            # fragment.head(N) reads the first N rows, slice extracts the desired row
+            row_table = current_fragment.head(offset + 1).slice(offset, 1)
+            row = row_table.to_pydict()
 
-            assert current_rg_table is not None  # mypy
-            # Arrow tables are columnar; pull the *row* efficiently
-            row = current_rg_table.slice(offset, 1).to_pydict()
-            # Convert single-value lists → scalars
+            # Convert single-value lists → scalars, excluding campaign_id
             features = {k: v[0] for k, v in row.items() if k not in {"campaign_id"}}
 
-            # assigns a user_id to the impression
-            features["user_id"] = self._rng.choice(range(self._num_users), size=1, replace=True)[0]
+            # Assigns a user_id to the impression if num_users is specified
+            if self._num_users is not None:
+                features["user_id"] = self._rng.choice(range(self._num_users), size=1, replace=True)[0]
 
             yield Impression(
                 features=features,
             )
 
-            # Optionally clear table if we do *not* want to keep it in memory
-            if not rowgroup_cache:
-                current_rg_table = None
-
     # –– helpers ––––––––––––––––––––––––––––––––––––––––––––––––––––––
-    def _rowgroup_for_index(self, absolute_idx: int) -> tuple[int, int]:
+    def _fragment_for_index(self, absolute_idx: int) -> tuple[int, int]:
         """
-        Map an absolute row index → (row-group index, offset inside group).
+        Map an absolute row index → (fragment index, offset inside fragment).
         """
-        # ParquetFile API gives us row-group sizes → cumulative sums
-        rg_sizes = [self._pf.metadata.row_group(i).num_rows for i in range(self._pf.num_row_groups)]
-        cum = np.cumsum([0] + rg_sizes)
-        rg_idx = np.searchsorted(cum, absolute_idx, side="right") - 1
-        offset = absolute_idx - cum[rg_idx]
-        return rg_idx, offset
+        # Find the fragment index using the precomputed cumulative row counts
+        frag_idx = np.searchsorted(self._cum_fragment_rows, absolute_idx, side="right") - 1
+        # Calculate the offset within that fragment
+        offset = absolute_idx - self._cum_fragment_rows[frag_idx]
+        return frag_idx, offset
 
 
 # TODO: Refacor this into a 'Network' class maybe? or figure out a better place for it.
@@ -122,12 +116,33 @@ class OnlinePreprocessor:
 
         p = lambda name: os.path.join(preprocessor_dir, name)  # noqa: E731
         # Load preprocessors 
-        self.categorical_encoder = joblib.load(p("categorical_encoder.joblib"))
-        self.numerical_scaler = joblib.load(p("numerical_scaler.joblib"))
-        self.categorical_features = joblib.load(p("categorical_features.joblib"))
-        self.boolean_features = joblib.load(p("boolean_features.joblib"))
-        self.cyclical_features = joblib.load(p("cyclical_features.joblib"))
-        self.numerical_features_to_scale = joblib.load(p("numerical_features_to_scale.joblib"))
+        self.cat_enc = joblib.load(p("categorical_encoder.joblib"))
+        self.num_scal = joblib.load(p("numerical_scaler.joblib"))
+
+        self.CATEGORICAL_FEATURES = {
+            "campaign_id": "int64",
+            "cnxn_type": "string",
+            "dma": "int16",
+            "country": "string",
+            "prizm_premier_code": "string",
+            "ua_browser": "object",
+            "ua_os": "object",
+            "ua_device_family": "object",
+            "ua_device_brand": "object",
+        }
+
+        self.BOOLEAN_FEATURES = [
+            "ua_is_mobile",
+            "ua_is_tablet",
+            "ua_is_pc",
+            "ua_is_bot",
+        ]
+
+        self.CYCLICAL_FEATURES = [
+            "impression_hour",
+            "impression_dayofweek",
+        ]
+
     
     def __call__(self, impression: Impression, campaign_id: str) -> tuple[torch.Tensor, torch.Tensor]:
         """
@@ -140,50 +155,64 @@ class OnlinePreprocessor:
         Returns:
             Tuple of (categorical_tensor, numerical_tensor) for the input to the model
         """
-        # Combine features with campaign_id for processing
-        features = {**impression.features, 'campaign_id': campaign_id}
-        
-        # 1. Process categorical features
-        # Create a pandas DataFrame with proper column names to avoid warnings
-        categorical_features = self.categorical_features
-        cat_data = {feature: [features.get(feature, None)] for feature in categorical_features}
-        cat_df = pd.DataFrame(cat_data)
-        
-        # Encode
-        encoded_cats = self.categorical_encoder.transform(cat_df)
-        
-        # Handle unknowns (-1 -> 0, shift others +1)
-        encoded_cats[encoded_cats == -1] = 0
-        encoded_cats[encoded_cats > -1] += 1
-        categorical_tensor = torch.tensor(encoded_cats, dtype=torch.int64).to(self.device)
-        
-        # 2. Process numerical features (boolean + cyclical)
-        # Create dictionary with feature values
-        numerical_values = {}
-        
-        # Boolean features
-        for feat in self.boolean_features:
-            numerical_values[feat] = float(features.get(feat, False))
-        
-        # Cyclical features (hour, day of week)
-        hour = features.get('impression_hour', 0)
-        day = features.get('impression_dayofweek', 0)
-        numerical_values['hour_sin'] = np.sin(2 * np.pi * hour / 24.0)
-        numerical_values['hour_cos'] = np.cos(2 * np.pi * hour / 24.0)
-        numerical_values['day_sin'] = np.sin(2 * np.pi * day / 7.0)
-        numerical_values['day_cos'] = np.cos(2 * np.pi * day / 7.0)
-        
-        # Create DataFrame with proper column names
-        num_df = pd.DataFrame({feat: [numerical_values.get(feat, 0.0)] for feat in self.numerical_features_to_scale})
-        
-        # Scale numerical features
-        scaled_numerical = self.numerical_scaler.transform(num_df)
-        numerical_tensor = torch.tensor(scaled_numerical, dtype=torch.float32).to(self.device)
+        features = {'campaign_id': int(campaign_id)}
+        features.update(impression.features)
+        df = pd.DataFrame([features])
+            
+        # -------- categorical --------
+        cat_df = df[list(self.CATEGORICAL_FEATURES)].copy()
+        for col in self.CATEGORICAL_FEATURES:
+            if col in {"campaign_id", "dma"}:
+                cat_df[col] = pd.to_numeric(cat_df[col], errors="raise").astype("int64")
+            else:
+                cat_df[col] = cat_df[col].astype("string").fillna("-1")
+        cat_df = cat_df.astype(self.CATEGORICAL_FEATURES)
 
-        # Process target (conversion_flag that is always 0)
-        target_tensor = torch.tensor(0.0, dtype=torch.float32).to(self.device)
+        cat_np = self.cat_enc.transform(cat_df).astype(np.int64)
+        cat_np[cat_np == -1] = 0  # reserve 0 for “unknown”
 
-        return (categorical_tensor, numerical_tensor, target_tensor)
+        # -------- numerical --------
+        num_df = pd.DataFrame(index=df.index)
+        for col in self.BOOLEAN_FEATURES:
+            num_df[col] = df[col].astype(float)
+        # This code performs cyclical encoding of time features:
+        # - Converts hours (0-23) into circular coordinates using sin/cos
+        # - Converts days of week (0-6) into circular coordinates using sin/cos
+        # This preserves the cyclic nature of time - e.g. hour 23 is close to hour 0,
+        # and Sunday (6) is close to Monday (0). Regular numeric encoding would lose
+        # this cyclical relationship.
+        hour = df["impression_hour"]
+        day = df["impression_dayofweek"]
+        num_df["hour_sin"] = np.sin(2 * np.pi * hour / 24.0)
+        num_df["hour_cos"] = np.cos(2 * np.pi * hour / 24.0)
+        num_df["day_sin"] = np.sin(2 * np.pi * day / 7.0)
+        num_df["day_cos"] = np.cos(2 * np.pi * day / 7.0)
+
+        num_np = self.num_scal.transform(num_df).astype(np.float32)
+
+        # -------- target --------
+        y = df["conversion_flag"].to_numpy(dtype=np.float32)
+
+        # -------- flatten into columns --------
+        processed = pd.DataFrame(index=df.index)
+        for i in range(cat_np.shape[1]):
+            processed[f"cat_{i}"] = cat_np[:, i]
+        for i in range(num_np.shape[1]):
+            processed[f"num_{i}"] = num_np[:, i]
+        processed["conversion_flag"] = y
+        
+
+        CAT_COLS = [f"cat_{i}" for i in range(9)]
+        NUM_COLS = [f"num_{i}" for i in range(8)]
+        LABEL_COL = "conversion_flag"
+        cat   = np.stack([np.asarray(processed[c]) for c in CAT_COLS], axis=1).astype("int32")
+        num   = np.stack([np.asarray(processed[c]) for c in NUM_COLS], axis=1).astype("float32")
+        label = np.asarray(processed[LABEL_COL]).astype("float32")
+        return (
+            torch.from_numpy(cat),
+            torch.from_numpy(num),
+            torch.from_numpy(label),
+        )
 
 
 class Market:

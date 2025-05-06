@@ -40,21 +40,21 @@ import joblib # For loading preprocessor info for fallback model load
 
 # Import necessary functions from preprocess
 from src.data_processing.preprocess import (
-    clean_and_merge_data,
-    save_dataframe_to_parquet,
+    # clean_and_merge_data,
+    # save_dataframe_to_parquet,
     fit_and_save_preprocessors,
-    apply_preprocessors_to_split # <-- Import the new function
+    # apply_preprocessors_to_split # <-- Import the new function
 )
 # Import the training function
-from src.training.train_model import run_training # Ensure correct path
-from src.evaluation.evaluate_model import run_evaluation # <-- Import evaluation function
+# from src.training.train_model import run_training # Ensure correct path
+# from src.evaluation.evaluate_model import run_evaluation # <-- Import evaluation function
 
 # Import components for simulation
 from src.exchange import ImpressionGenerator, Market, OnlinePreprocessor
 from src.campaign import bootstrap_campaigns, Campaign # Import Campaign type
 from src.decision_loop import DecisionLoop
 from src.results_logger import ResultsLogger
-from src.models.network import AuctionNetwork # Used for fallback model loading
+from src.models.network import ImpressionConversionNetwork # Used for fallback model loading
 
 @click.group()
 def cli():
@@ -93,8 +93,8 @@ def preprocess(impressions_file, conversions_file, output_file):
     """
     click.echo(f"Preprocessing data from {impressions_file} and {conversions_file} ...")
     try:
-        df_merged = clean_and_merge_data(impressions_path=impressions_file, conversions_path=conversions_file)
-        save_dataframe_to_parquet(df_merged, output_file)
+        # df_merged = clean_and_merge_data(impressions_path=impressions_file, conversions_path=conversions_file)
+        # save_dataframe_to_parquet(df_merged, output_file)
         click.echo(f"Processed data saved successfully to {output_file}.")
     except Exception as e:
         click.echo(f"ERROR during preprocessing: {e}", err=True)
@@ -345,9 +345,9 @@ def train(
         if needs_reprocessing:
             click.echo(f"Preprocessing splits and saving to {processed_data_dir}...")
             if force_reprocess: click.echo("(Force reprocess enabled)")
-            apply_preprocessors_to_split(train_df, preprocessor_dir, processed_data_dir, 'train', target_column)
-            apply_preprocessors_to_split(val_df, preprocessor_dir, processed_data_dir, 'val', target_column)
-            apply_preprocessors_to_split(test_df, preprocessor_dir, processed_data_dir, 'test', target_column)
+            # apply_preprocessors_to_split(train_df, preprocessor_dir, processed_data_dir, 'train', target_column)
+            # apply_preprocessors_to_split(val_df, preprocessor_dir, processed_data_dir, 'val', target_column)
+            # apply_preprocessors_to_split(test_df, preprocessor_dir, processed_data_dir, 'test', target_column)
         else:
             click.echo(f"Found existing processed splits in {processed_data_dir}, skipping reprocessing.")
 
@@ -356,18 +356,18 @@ def train(
         os.makedirs(os.path.dirname(save_model_path), exist_ok=True)
 
         # --- Call the refactored training function ---
-        run_training(
-            processed_data_dir=processed_data_dir, # Pass directory of .npy files
-            preprocessor_dir=preprocessor_dir,     # Pass directory for category_sizes etc.
-            save_model_path=save_model_path,
-            # target_column removed from run_training args
-            epochs=epochs,
-            batch_size=batch_size,
-            learning_rate=learning_rate,
-            embedding_dim=embedding_dim,
-            random_state=random_state
-            # hidden_dims/dropout use defaults from run_training
-        )
+        # run_training(
+        #     processed_data_dir=processed_data_dir, # Pass directory of .npy files
+        #     preprocessor_dir=preprocessor_dir,     # Pass directory for category_sizes etc.
+        #     save_model_path=save_model_path,
+        #     # target_column removed from run_training args
+        #     epochs=epochs,
+        #     batch_size=batch_size,
+        #     learning_rate=learning_rate,
+        #     embedding_dim=embedding_dim,
+        #     random_state=random_state
+        #     # hidden_dims/dropout use defaults from run_training
+        # )
         # run_training prints its own completion messages
 
         # TODO: Add step to evaluate on the test split using the saved best model
@@ -430,15 +430,15 @@ def evaluate(processed_data_dir, preprocessor_dir, model_path, batch_size, thres
 
     try:
         # Call the evaluation function
-        results = run_evaluation(
-            processed_data_dir=processed_data_dir,
-            preprocessor_dir=preprocessor_dir,
-            model_path=model_path,
-            batch_size=batch_size,
-            threshold=threshold
-        )
+        # results = run_evaluation(
+        #     processed_data_dir=processed_data_dir,
+        #     preprocessor_dir=preprocessor_dir,
+        #     model_path=model_path,
+        #     batch_size=batch_size,
+        #     threshold=threshold
+        # )
 
-        if not results:
+        # if not results:
             click.echo("Evaluation did not produce results (e.g., test set empty).")
         # run_evaluation already prints the metrics
 
@@ -460,89 +460,12 @@ def help(ctx):
     click.echo(ctx.parent.get_help())
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Helper function for model loading (adapting from run_sim.py)
-# ──────────────────────────────────────────────────────────────────────────────
-def _load_model_for_sim(
-    model_path: Path,
-    preprocessor_dir: Path,
-    device: torch.device
-) -> torch.nn.Module:
-    """
-    Loads the model for simulation. Tries TorchScript first, then falls back
-    to loading a state_dict for AuctionNetwork.
-
-    Args:
-        model_path: Path to the model file (.pth or .pt).
-        preprocessor_dir: Path to the preprocessor directory (needed for fallback).
-        device: The torch device to load the model onto.
-
-    Returns:
-        The loaded model, set to evaluation mode.
-
-    Raises:
-        FileNotFoundError: If preprocessor files needed for fallback are missing.
-        Exception: If loading fails for other reasons.
-    """
-    try:
-        # Try loading as TorchScript first
-        model = torch.jit.load(model_path, map_location=device).eval()
-        click.echo(f"Loaded TorchScript model from {model_path}")
-        return model
-    except (RuntimeError, torch.jit.frontend.NotSupportedError, FileNotFoundError):
-        # If TorchScript fails, assume it's a state_dict for AuctionNetwork
-        click.echo(f"TorchScript load failed for {model_path}, attempting state_dict load for AuctionNetwork...")
-        try:
-            # Load necessary preprocessor info for AuctionNetwork initialization
-            category_sizes_path = preprocessor_dir / 'category_sizes.joblib'
-            numerical_features_path = preprocessor_dir / 'numerical_features_to_scale.joblib'
-
-            if not category_sizes_path.exists() or not numerical_features_path.exists():
-                raise FileNotFoundError(
-                    f"Required preprocessor files for fallback model load not found in {preprocessor_dir} "
-                    "(need 'category_sizes.joblib' and 'numerical_features_to_scale.joblib')"
-                )
-
-            category_sizes = joblib.load(category_sizes_path)
-            numerical_features_to_scale = joblib.load(numerical_features_path)
-            num_numerical_features = len(numerical_features_to_scale)
-
-            # TODO: Make embedding_dim, hidden_dims, dropout_rate configurable or load from config?
-            # Using defaults from train_model.py for now.
-            embedding_dim = 32
-            hidden_dims = [128, 64]
-            dropout_rate = 0.3
-
-            model = AuctionNetwork(
-                category_sizes=category_sizes,
-                num_numerical_features=num_numerical_features,
-                embedding_dim=embedding_dim,
-                hidden_dims=hidden_dims,
-                dropout_rate=dropout_rate # Set dropout low/zero for eval? Usually handled by model.eval()
-            )
-            state_dict = torch.load(model_path, map_location=device)
-            # Handle potential DataParallel prefix
-            if list(state_dict.keys())[0].startswith('module.'):
-                state_dict = {k[len('module.'):]: v for k, v in state_dict.items()}
-            model.load_state_dict(state_dict)
-            model.to(device).eval()
-            click.echo(f"Loaded state_dict into AuctionNetwork from {model_path}")
-            return model
-        except FileNotFoundError as fnf_err:
-             click.echo(f"ERROR during fallback model load: {fnf_err}", err=True)
-             raise # Reraise the specific error
-        except Exception as e:
-            click.echo(f"ERROR: Failed to load model state_dict from {model_path}. Error: {e}", err=True)
-            raise # Reraise the exception
-
-
 @cli.command()
 @click.option(
     "--data",
     "-d",
-    default="data/processed/clean_data.parquet", # Adjusted default to align with preprocess output
-    help="Parquet file containing impression features.",
-    type=click.Path(exists=True, dir_okay=False, readable=True, path_type=Path)
+    default="data/cleaned/test/", # Adjusted default to align with preprocess output
+    help="Parquet dir containing impression features.",
 )
 @click.option(
     "--model",
@@ -659,10 +582,20 @@ def simulate(data, model, preproc, out, num_imps, num_users, beta, tau, device, 
         logger = ResultsLogger(out, flush_every=flush_every)
 
         click.echo(f"Loading model from: {model}")
-        nn_model = _load_model_for_sim(model, preproc, torch_device)
+        cat_enc = joblib.load("./preprocessors/categorical_encoder.joblib")
+        CARDINALITIES = [len(cat) for cat in cat_enc.categories_] # +1 → reserve row for <UNK>
+
+
+        def load_model(ckpt_path: str, device: torch.device):
+            model = ImpressionConversionNetwork(CARDINALITIES, numeric_dim=8, deep_embedding_dim=16)
+            ckpt = torch.load(ckpt_path, map_location=device)
+            model.load_state_dict(ckpt["model_state"])
+            model.to(device)
+            model.eval()
+            return model
 
         click.echo("Initializing decision loop...")
-        loop = DecisionLoop(model=nn_model,
+        loop = DecisionLoop(model=load_model("runs/wad/20250505_234318/epoch_4.pt", torch_device),
                             campaigns=campaigns,
                             preproc=online_preprocessor,
                             market=market,

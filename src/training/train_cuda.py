@@ -130,22 +130,26 @@ def train(
     auc_metric = BinaryAUROC(thresholds=256).to(device)
     # ap_metric  = BinaryAveragePrecision().to("cpu")
 
+    train_ds.cat   = train_ds.cat.to("cuda", non_blocking=True)
+    train_ds.num   = train_ds.num.to("cuda", non_blocking=True)
+    train_ds.label = train_ds.label.to("cuda", non_blocking=True)
+
     # --- dataloaders ---------------------------------------------------
     train_loader = DataLoader(
         train_ds,
         batch_size=batch_size,
-        shuffle=True,
-        num_workers=16,
-        pin_memory=True,
-        persistent_workers=True,
-        prefetch_factor=4,
+        # shuffle=True,
+        num_workers=0,
+        # pin_memory=True,
+        # persistent_workers=True,
+        # prefetch_factor=4,
     )
     val_loader = DataLoader(
         val_ds,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=8,
-        pin_memory=True,
+        # num_workers=8,
+        # pin_memory=True,
     )
 
     global_step = 0
@@ -205,7 +209,7 @@ if __name__ == "__main__":
         model           = model,
         train_ds        = train_ds,
         val_ds          = val_ds,
-        batch_size      = 2**15,    # fits on A100‑40GB with mixed precision
+        batch_size      = 2**16,    # fits on A100‑40GB with mixed precision
         num_epochs      = 10,
         pos_neg_ratio   = 4,         # 1 positive : 4 negatives sampler
         log_dir         = "./runs/wad/" + datetime.now().strftime("%Y%m%d_%H%M%S"),
