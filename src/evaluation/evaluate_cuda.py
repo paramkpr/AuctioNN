@@ -22,7 +22,7 @@ from models.network import ImpressionConversionNetwork
 # ----------------------------------------------------------------------
 # Config – adapt if your paths change
 TEST_CACHE   = "data/processed/test_tensor_cache.pt"
-CHECKPOINTS   = ["runs/wad/20250505_234318/epoch_{i}.pt" for i in (0, 4, 9)]     # ← pick the best epoch
+CHECKPOINTS   = [f"runs/wad/20250505_234318/epoch_{i}.pt" for i in (0, 4, 9)]     # ← pick the best epoch
 BATCH_SIZE   = 2**16                   # bigger ok for eval
 NUM_WORKERS  = 16
 EXPORT_SCORES = False                    # True → write scores.csv
