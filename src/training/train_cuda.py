@@ -141,7 +141,7 @@ def train(
         train_ds,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=0,
+        num_workers=16,
         pin_memory=True,
         persistent_workers=True,
         prefetch_factor=4,
