@@ -3,7 +3,7 @@ exchange.py
 This module simulates an external ad exchange that the core decision loop interacts with.
 
 The external ad exchange is responsible for two things:
-- Generating a stream of bid-requests (impression features) 
+- Generating a stream of bid-requests (impression features)
 - Setting the market price for each bid-request
     - Subsequently, deciding if the bid amount from the decision loop wins or not
 """
@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Iterator
 
 import numpy as np
-import pyarrow.parquet as pq # Need this for direct file reading
+import pyarrow.parquet as pq  # Need this for direct file reading
 import pyarrow as pa
 from pathlib import Path
 import pandas as pd
@@ -27,8 +27,9 @@ class Impression:
     """
     A single impression I_t. Does not include the campaign_id.
     """
-    features: dict[str, int | float | str]
 
+    features: dict[str, int | float | str]
+    campaign_id_sampled_from: str | None
 
 
 class ImpressionGenerator:
@@ -41,7 +42,7 @@ class ImpressionGenerator:
         self,
         parquet_dir_path: str | Path,
         seed: int | None = 42,
-        num_users: int | None = None, # number of users the market provides
+        num_users: int | None = None,  # number of users the market provides
     ) -> None:
         self._base_path = Path(parquet_dir_path)
         self._rng = np.random.default_rng(seed)
@@ -70,13 +71,16 @@ class ImpressionGenerator:
                 print(f"Warning: Could not read metadata for {fpath}: {e}")
 
         if not self._file_info:
-             raise ValueError(f"No non-empty Parquet files with readable metadata found under {parquet_dir_path}")
+            raise ValueError(
+                f"No non-empty Parquet files with readable metadata found under {parquet_dir_path}"
+            )
 
         self._num_rows = total_rows
         # 3. Calculate cumulative row counts for mapping index to file
         self._cum_file_rows = np.cumsum([0] + [count for _, count in self._file_info])
-        print(f"Initialized ImpressionGenerator with {self._num_rows} total rows across {len(self._file_info)} files.")
-
+        print(
+            f"Initialized ImpressionGenerator with {self._num_rows} total rows across {len(self._file_info)} files."
+        )
 
     # –– public –––––––––––––––––––––––––––––––––––––––––––––––––––––––
     def stream(
@@ -94,14 +98,15 @@ class ImpressionGenerator:
                  Note: Sequential order depends on file system listing order.
         """
         order = (
-            self._rng.permutation(self._num_rows) if shuffle else np.arange(self._num_rows)
+            self._rng.permutation(self._num_rows)
+            if shuffle
+            else np.arange(self._num_rows)
         )
 
         # Cache the last opened file and its row groups to avoid repeated reads
         last_pf: pq.ParquetFile | None = None
         last_filepath: Path | None = None
         last_rg_tables: dict[int, pa.Table] = {}
-
 
         for absolute_idx in order:
             # 4. Map global index to file index and offset within that file
@@ -115,10 +120,10 @@ class ImpressionGenerator:
                     # print(f"Opening file: {filepath}") # Debugging
                     last_pf = pq.ParquetFile(filepath)
                     last_filepath = filepath
-                    last_rg_tables = {} # Clear row group cache
+                    last_rg_tables = {}  # Clear row group cache
 
-                if last_pf is None: # Should not happen if file opened successfully
-                     raise RuntimeError("ParquetFile handle is None")
+                if last_pf is None:  # Should not happen if file opened successfully
+                    raise RuntimeError("ParquetFile handle is None")
 
                 # Find which row group the offset falls into
                 rg_idx, offset_in_rg = self._rowgroup_for_index(last_pf, offset_in_file)
@@ -140,17 +145,23 @@ class ImpressionGenerator:
 
                 # Assigns a user_id to the impression if num_users is specified
                 if self._num_users is not None:
-                    features["user_id"] = self._rng.choice(range(self._num_users), size=1, replace=True)[0]
+                    features["user_id"] = self._rng.choice(
+                        range(self._num_users), size=1, replace=True
+                    )[0]
+
+                campaign_id_sampled_from = str(filepath).split("=")[-1].split("/")[0]
 
                 yield Impression(
+                    campaign_id_sampled_from=campaign_id_sampled_from,
                     features=features,
                 )
 
             except Exception as e:
-                 print(f"Error processing row {absolute_idx} (file: {filepath}, offset: {offset_in_file}): {e}")
-                 # Decide whether to continue or raise
-                 # continue # Skip problematic row/file
-
+                print(
+                    f"Error processing row {absolute_idx} (file: {filepath}, offset: {offset_in_file}): {e}"
+                )
+                # Decide whether to continue or raise
+                # continue # Skip problematic row/file
 
     # –– helpers ––––––––––––––––––––––––––––––––––––––––––––––––––––––
     def _file_for_index(self, absolute_idx: int) -> tuple[int, int]:
@@ -163,12 +174,16 @@ class ImpressionGenerator:
         offset_in_file = absolute_idx - self._cum_file_rows[file_idx]
         return file_idx, offset_in_file
 
-    def _rowgroup_for_index(self, pf: pq.ParquetFile, offset_in_file: int) -> tuple[int, int]:
+    def _rowgroup_for_index(
+        self, pf: pq.ParquetFile, offset_in_file: int
+    ) -> tuple[int, int]:
         """
         Map an offset within a file → (row-group index, offset inside that group).
         """
         # Calculate cumulative sums of row group sizes for the specific file
-        cum_rg_rows = np.cumsum([0] + [pf.metadata.row_group(i).num_rows for i in range(pf.num_row_groups)])
+        cum_rg_rows = np.cumsum(
+            [0] + [pf.metadata.row_group(i).num_rows for i in range(pf.num_row_groups)]
+        )
         rg_idx = np.searchsorted(cum_rg_rows, offset_in_file, side="right") - 1
         offset_in_rg = offset_in_file - cum_rg_rows[rg_idx]
         return rg_idx, offset_in_rg
@@ -183,11 +198,17 @@ class OnlinePreprocessor:
     """
 
     def __init__(self, preprocessor_dir: str | Path):
-        device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+        device = (
+            "cuda"
+            if torch.cuda.is_available()
+            else "mps"
+            if torch.backends.mps.is_available()
+            else "cpu"
+        )
         self.device = torch.device(device)
 
         p = lambda name: os.path.join(preprocessor_dir, name)  # noqa: E731
-        # Load preprocessors 
+        # Load preprocessors
         self.cat_enc = joblib.load(p("categorical_encoder.joblib"))
         self.num_scal = joblib.load(p("numerical_scaler.joblib"))
 
@@ -215,22 +236,23 @@ class OnlinePreprocessor:
             "impression_dayofweek",
         ]
 
-    
-    def __call__(self, impression: Impression, campaign_id: str) -> tuple[torch.Tensor, torch.Tensor]:
+    def __call__(
+        self, impression: Impression, campaign_id: str
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Processes a single impression and campaign_id into tensors matching those from AuctionDataset.
-        
+
         Args:
             impression: An Impression object from ImpressionGenerator
             campaign_id: The campaign ID to use
-            
+
         Returns:
             Tuple of (categorical_tensor, numerical_tensor) for the input to the model
         """
-        features = {'campaign_id': int(campaign_id)}
+        features = {"campaign_id": int(campaign_id)}
         features.update(impression.features)
         df = pd.DataFrame([features])
-            
+
         # -------- categorical --------
         cat_df = df[list(self.CATEGORICAL_FEATURES)].copy()
         for col in self.CATEGORICAL_FEATURES:
@@ -272,13 +294,16 @@ class OnlinePreprocessor:
         for i in range(num_np.shape[1]):
             processed[f"num_{i}"] = num_np[:, i]
         processed["conversion_flag"] = y
-        
 
         CAT_COLS = [f"cat_{i}" for i in range(9)]
         NUM_COLS = [f"num_{i}" for i in range(8)]
         LABEL_COL = "conversion_flag"
-        cat   = np.stack([np.asarray(processed[c]) for c in CAT_COLS], axis=1).astype("int32")
-        num   = np.stack([np.asarray(processed[c]) for c in NUM_COLS], axis=1).astype("float32")
+        cat = np.stack([np.asarray(processed[c]) for c in CAT_COLS], axis=1).astype(
+            "int32"
+        )
+        num = np.stack([np.asarray(processed[c]) for c in NUM_COLS], axis=1).astype(
+            "float32"
+        )
         label = np.asarray(processed[LABEL_COL]).astype("float32")
         return (
             torch.from_numpy(cat),
@@ -289,30 +314,22 @@ class OnlinePreprocessor:
 
 class Market:
     """
-    Simulates the actual external ad exchange market. 
+    Simulates the actual external ad exchange market.
     - Samples a market price for each bid-request / impression.
-    - Provides a 'simulate' method that, given bid amount; impression; and campaign, 
+    - Provides a 'simulate' method that, given bid amount; impression; and campaign,
         returns the result of the auction.
     """
 
-    def __init__(self, median_cpm: float = 5.0, # $5 CPM = $0.005 per impression
-                 sigma: float = 0.5,  # log-normal distribution sigma
-                 seed: int = 42,  # random seed for reproducibility
-                 ) -> None:
-        self._median = median_cpm # / 1000.0      # convert CPM → per-imp $
+    def __init__(
+        self,
+        median_cpm: float = 5.0,  # $5 CPM = $0.005 per impression
+        sigma: float = 0.5,  # log-normal distribution sigma
+        seed: int = 42,  # random seed for reproducibility
+    ) -> None:
+        self._median = median_cpm  # / 1000.0      # convert CPM → per-imp $
         self._sigma = sigma
         self._rng = np.random.default_rng(seed)
 
-    def _sample_price(self) -> float:
-        """
-        Sample a price from a log-normal distribution with the given median and sigma.
-        
-        """
-        # Gamma produces right‑skew; mean ≈ $0.0065 (≈ $6.5 CPM)
-        return float(self._rng.gamma(shape=2.0, scale=0.00325))
-        mu = np.log(self._median)
-        return float(self._rng.lognormal(mean=mu, sigma=self._sigma))
-    
     def simulate(self, bid_amount: float) -> bool:
         """
         Simulates the market price and returns the market price and the result of the auction.
@@ -323,5 +340,5 @@ class Market:
         Returns:
             A tuple of (market_price, result).
         """
-        market_price = self._sample_price()
+        market_price = bid_amount * self._rng.uniform(0.9, 1.1)
         return market_price, bid_amount > market_price

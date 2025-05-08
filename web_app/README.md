@@ -1,2 +1,0 @@
-A web app for AuctioNN that allows users to explore the dataset, simulate auctions, adjust model hyperparameters, and view model predictions. 
-Note: the actual working of this app is subject to time constraints and is the lowest priority at the moment.

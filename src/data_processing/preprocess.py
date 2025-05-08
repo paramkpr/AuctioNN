@@ -341,7 +341,7 @@ if __name__ == "__main__":
     fit_preprocessors_on_sample(
         train_data_path="./data/cleaned/train",
         output_dir="./preprocessors",
-        n_rows_per_campaign=100_000,   # 100 k × 88  ≈ 8.8 M rows
+        n_rows_per_campaign=100_000,  # 100 k × 88  ≈ 8.8 M rows
     )
 
     apply_and_save_preprocessed_data(

@@ -34,4 +34,4 @@ data/processed_splits/
 *.pem
 keys/
 
-runs/
+runs/wad/

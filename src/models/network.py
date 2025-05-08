@@ -12,7 +12,7 @@ class ImpressionConversionNetwork(nn.Module):
     ------------------------
     - categorical: LongTensor (B, N_cat)  # cat_0 ... cat_8 as *ordinal* ID
     - numerical: FloatTensor (B, N_num)   # num_0 ... num_7 already scaled
-    
+
     Returns
     -------
     - p: FloatTensor (B,) predicted conversion rate
@@ -33,10 +33,7 @@ class ImpressionConversionNetwork(nn.Module):
 
         # Wide part
         self.wide_embeddings = nn.ModuleList(
-            [
-                nn.Embedding(cardinality, 1)
-                for cardinality in categorical_cardinalities
-            ]
+            [nn.Embedding(cardinality, 1) for cardinality in categorical_cardinalities]
         )
 
         # Deep part
@@ -46,7 +43,6 @@ class ImpressionConversionNetwork(nn.Module):
                 for cardinality in categorical_cardinalities
             ]
         )
-        
 
         # Deep MLP
         deep_input_dim = self.n_cat * deep_embedding_dim + self.n_num
@@ -64,8 +60,6 @@ class ImpressionConversionNetwork(nn.Module):
         for emb in list(self.wide_embeddings) + list(self.deep_embeddings):
             nn.init.normal_(emb.weight, mean=0.0, std=0.01)
 
-    
-    # TODO: wrap in torch.cuda.amp.autocast() for NVIDIA training
     def forward(
         self,
         categorical: torch.Tensor,
@@ -74,7 +68,7 @@ class ImpressionConversionNetwork(nn.Module):
     ) -> torch.Tensor:
         """
         Parameters
-        ---------- 
+        ----------
         categorical : LongTensor (B, N_CAT)
         numeric     : FloatTensor (B, N_NUM)
         return_logits : set True to bypass sigmoid for BCEWithLogitsLoss
@@ -96,7 +90,9 @@ class ImpressionConversionNetwork(nn.Module):
         deep_embeddings = [
             emb(categorical[:, i]) for i, emb in enumerate(self.deep_embeddings)
         ]  # List of (B, D) tensors
-        deep_input = torch.cat(deep_embeddings + [numerical], dim=1)  # Shape: (B, N_cat * D + N_num)
+        deep_input = torch.cat(
+            deep_embeddings + [numerical], dim=1
+        )  # Shape: (B, N_cat * D + N_num)
         deep_logits = self.deep_mlp(deep_input)  # Shape: (B, 1)
 
         # Combine wide and deep parts
