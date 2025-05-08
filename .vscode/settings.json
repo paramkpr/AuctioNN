@@ -1,3 +1,6 @@
 {
-    "latex-workshop.formatting.latex": "tex-fmt"
+    "latex-workshop.formatting.latex": "tex-fmt",
+    "cSpell.words": [
+        "preproc"
+    ]
 }
