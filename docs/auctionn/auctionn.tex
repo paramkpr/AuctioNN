@@ -45,22 +45,22 @@ Large-Scale Cost-Per-Action Optimization}
 
 \section{Introduction}
 
-Online advertising operates at a staggering scale, with billions of individual auctions happening every day across the web, apps, and streaming platforms. At the core of this system lies the real-time bidding (RTB) process, where advertisers compete to show their ads to specific users at specific moments. But not all impressions are created equal, some users are far more likely to engage, click, or convert than others. The challenge, then, is to bid intelligently: to spend money where it is most likely to drive meaningful outcomes, such as purchases, signups, or app installs, while respecting the constraints of campaign budgets and performance goals.
+Online advertising operates at a staggering scale, with billions of individual auctions happening every day across the web, apps, and streaming platforms. At the core of this system lies the real-time bidding (RTB) process, where advertisers compete to show their ads to specific users at specific moments. But not all advertisements shown to users, or \textit{impressions}, are created equal, some users are far more likely to engage, click, or \textit{convert} (which could range from making a purchase to subscription depending on campaigner preferences) than others. On the side of the advertiser, they must consider their cost-per-action (CPA), or how much it costs for them to yield one conversion, and their available funding. The challenge, then, is to bid intelligently: to spend money where it is most likely to drive meaningful outcomes, such as purchases, signups, or app installs, while respecting the constraints of campaign budgets and performance goals. 
 
 Large media publishers increasingly extend their reach by \emph{buying} impressions on open ad exchanges. Operating \num{e3}--\num{e4} concurrent campaigns in real time raises three entangled challenges:
 \begin{enumerate}
-  \item \textbf{Win the \emph{right} inventory}—impressions that
+  \item \textbf{Win the \emph{right} inventory}: impressions that
     drive post-click or post-view conversions.
-  \item \textbf{Respect campaign goals}—especially CPA targets
+  \item \textbf{Respect campaign goals}: cost-per-action (CPA) targets
     stipulated in insertion orders.
-  \item \textbf{Obey operational constraints}—budgets, pacing, and
+  \item \textbf{Obey operational constraints}: budgets, pacing, and
     user-level frequency capping.
 \end{enumerate}
 This work posits that a neural model, combined with explicit budget/frequency bookkeeping, can outperform classical heuristics that ignore conversion likelihood, or at the very least, random bidding.
 
-Traditionally, bidding strategies in RTB have either relied on simple heuristics, such as bidding proportionally to an advertiser's declared value per conversion, or leveraged machine learning models that directly output a recommended bid price based on the enviroment. Much of the recent work in this space has focused on reinforcement learning (RL) approaches, where an agent learns a bidding policy through interaction with an environment, balancing exploration with campaign-level constraints like budget or cost-per-action (CPA) targets.
+Traditionally, bidding strategies in RTB have either relied on simple heuristics, such as bidding proportionally to an advertiser's declared value per conversion, which can be translated to an agent's valuation in traditional auction mechanisms. They also leveraged machine learning models that directly output a recommended bid price based on the enviroment. Much of the recent work in this space has focused on reinforcement learning (RL) approaches, where an agent learns a bidding policy through interaction with an environment, balancing exploration with campaign-level constraints like budget or cost-per-action (CPA) targets.
 
-Our approach takes a different path. Rather than asking the neural network to output a bid price directly, we use it to focus on \emph{what we believe to be the root of the problem}: predicting the likelihood that a given impression will result in a conversion. In other words, we train a neural network purely as a \emph{conversion predictor}, separate from the bidding logic itself. We then use this predicted probability as an input to a decision (auction) algorithm that determines whether to bid, on which campaign, and at what price.
+Our approach takes a different path. Rather than asking the neural network to output a bid price directly, we use it to focus on what we believe to be the root of the problem: predicting the likelihood that a given impression will result in a conversion. In other words, we train a neural network purely as a \emph{conversion predictor}, separate from the bidding logic itself. We then use this predicted probability as an input to a decision (auction) algorithm that determines whether to bid, on which campaign, and at what price.
 
 The key motivation for this work is that accurate conversion estimation can enable more principled and interpretable bidding decisions. This separation of concerns allows the model to specialize in what it does best (learning conversion patterns from data) while keeping the bidding policy flexible and transparent.
 
@@ -71,31 +71,32 @@ In this paper, we present \emph{AuctioNN}, a simulation driven bidding engine th
 
 \subsection{The Landscape of Bidding in Online Advertising}
 
+
 At the heart of real-time bidding (RTB) systems is a deceptively simple question: \emph{how much should an advertiser bid for a given ad impression?} Yet behind this question lie several layers of complexity. The auction mechanisms themselves may vary (first-price, second-price, programmatic guaranteed), campaign objectives often include a mix of budget limits and cost-per-action (CPA) goals, and, critically, the true value of an impression (whether it will lead to a conversion) is rarely known at the time of bidding.
 
-Historically, the first generation of bidding strategies relied on \emph{rule-based heuristics}. These approaches often computed the expected value of an impression by estimating the probability of a click (CTR) or conversion (CVR) and then multiplying this probability by the advertiser’s declared value per click or per conversion. The bid was then set either directly to this expected value or scaled by a constant factor to account for risk preferences or auction mechanics. These heuristics worked well in the early days of second-price auctions, where truthful bidding (bidding your true value) is an optimal strategy under ideal conditions.
+Historically, the first generation of bidding strategies in open ad exchanges relied on \emph{rule-based heuristics}. These approaches often computed the expected value of an impression by estimating the probability of a click (CTR) or conversion (CVR) and then multiplying this probability by the advertiser’s declared value per click or per conversion. The bid was then set either directly to this expected value or scaled by a constant factor to account for risk preferences or other payments. These heuristics worked well in the early days of second-price auctions, where truthful bidding is an optimal strategy under ideal conditions, allowing for simple and clean visualizations of the auction environment. 
 
-However, with the majority of online auctions being  \emph{first-price auctions}, where the winning bidder pays their own bid amount, disrupted this simplicity. In first-price environments, bidding your full value results in systematically overpaying, so bidders must ``shade'' their bids downward to avoid eroding profit margins. This need for bid shading introduced a new layer of strategic uncertainty, where bidders had to model not just their own value but also anticipate the distribution of competing bids.
+However, the majority of online auctions being  \emph{first-price auctions}, where the winning bidder pays their own bid amount, disrupted this simplicity. In first-price environments, bidding your full value results in systematically overpaying, so bidders must ``shade'' their bids downward to avoid eroding profit margins. Thus, unlike the strategyproof second-price auctions from before, these current online auctions are manipulable and therefore not strategyproof. This need for bid shading introduced a new layer of strategic uncertainty, where bidders had to model not just their own value but also anticipate the distribution of competing bids.
 
 \subsection{How an Open Ad Exchange Works}
 \label{sec:exchange}
 
-For each page-view or app launch, the exchange issues a \emph{bid
-request} containing contextual metadata (timestamp, device, geo,
+For each page-view or app launch, the exchange issues an automated \emph{bid
+request} containing contextual metadata (timestamp, device, geographic location,
 etc.).  Every buyer has roughly \SI{100}{\milli\second} to (i) decide
 whether to participate and (ii) transmit a bid price.
-The highest bid wins and immediately pays the \emph{clearing price}.
+The highest bid wins and immediately pays the \emph{clearing price}, or simply the actual price bid in a first-price auction environment.
 In most modern exchanges this is a \emph{first-price auction}; the
 winner pays its own bid. However, some exchanges use different auction
 models like \emph{second-price} or programmatic guaranteed (PG) auctions.
-Any downstream \emph{conversion event} (purchase, signup, \dots) is
-reported asynchronously, often minutes to days later.
+Any downstream \emph{conversion event} (click, purchase, signup, \dots) is reported asynchronously, often minutes to days later.
+
 
 \subsection{Reinforcement Learning for Bidding: Direct Bid Optimization}
 
 As these complexities grew, researchers began turning to \emph{reinforcement learning (RL)} to optimize bidding strategies. In this framework, bidding is modeled as a sequential decision-making problem, where the agent interacts repeatedly with an environment (the auction marketplace), and learns a policy that maximizes long-term rewards (e.g., total conversions, clicks, or revenue) while respecting budgetary or pacing constraints.
 
-One early influential approach was the \emph{Real-Time Bidding by Reinforcement Learning (RLB)} framework by Cai et al.\ (2017). This work framed bidding as a Markov Decision Process (MDP), where the state included remaining budget, remaining time, and other campaign features. The action space was the set of possible bid prices. The RLB agent used value-based RL methods to learn the expected cumulative reward from each state-action pair and selected bids accordingly. The reward function was typically tied to immediate outcomes like clicks or conversions.
+One early influential approach was the \textit{Real-Time Bidding by Reinforcement Learning} (RLB) framework by Cai et al.\ (2017). Prior to the findings of this paper, approaches would utilize static optimization, with each impression treated independently. These previous methods have failed to consider the change in valuation on impressions as budgets deplete, as well as failing to anticipate how valuable an impression is in the future, after, for example, conversion data for the impressions are received. As a result, this work framed bidding as a \textit{Markov Decision Process} (MDP), where the set of observable spaces included the remaining budget, remaining time, and other campaign features. The action space was the set of possible bid prices. The RLB agent used value-based RL methods to learn the expected cumulative reward from each state-action pair and selected bids accordingly. The reward function was typically tied to immediate outcomes like clicks or conversions.
 
 Following this, Wu et al.\ (2018) addressed an important limitation of the basic RLB approach: naïve reward structures can lead to poor budget pacing, with agents spending too aggressively early in a campaign or failing to adapt to delayed conversion feedback. To remedy this, Wu et al.\ introduced \emph{budget-aware state representations} and carefully designed reward functions that penalized over- or under-spending relative to pacing goals. Their approach allowed the RL agent to account for the long-term impact of current bidding decisions on campaign success, making it more robust in practice.
 
