@@ -13,6 +13,7 @@
 \usepackage{tikz}
 \usetikzlibrary{shapes.geometric, arrows.meta, positioning, fit}
 \usepackage{caption}
+\usepackage{indentfirst}
 \captionsetup{font=small,labelfont=bf}
 
 \title{\bfseries AuctioNN: A Simulation-Driven Bidding Engine for\\
@@ -87,9 +88,9 @@ etc.).  Every buyer has roughly \SI{100}{\milli\second} to (i) decide
 whether to participate and (ii) transmit a bid price.
 The highest bid wins and immediately pays the \emph{clearing price}, or simply the actual price bid in a first-price auction environment.
 In most modern exchanges this is a \emph{first-price auction}; the
-winner pays its own bid. However, some exchanges use different auction
-models like \emph{second-price} or programmatic guaranteed (PG) auctions.
-Any downstream \emph{conversion event} (click, purchase, signup, \dots) is reported asynchronously, often minutes to days later.
+winner pays their own bid. However, some exchanges use different auction
+models such as \emph{second-price} or programmatic guaranteed auctions (PG), where advertisers pay a negotiated price for a set number of impressions.
+Any downstream \emph{conversion event} (such can be detected clicks, purchases, sign-ups, \dots) is reported asynchronously, often minutes to days later. 
 
 
 \subsection{Reinforcement Learning for Bidding: Direct Bid Optimization}
@@ -112,7 +113,21 @@ The outputs of these models are typically used as \emph{inputs into heuristic bi
 
 Google's \emph{Smart Bidding} strategies, as well as Facebook’s auction system, are examples of large-scale production systems where machine learning predicts the likelihood of various outcomes and then uses those predictions to guide bidding decisions. However, in many of these systems, the predictive model itself is \emph{deeply coupled} with the bidding logic, and the specifics of how conversion probabilities are used within the bid calculation are proprietary. This is the path our model will utalize.
 
-\subsection{The Gap: Prediction vs.\ Policy}
+\subsection{Wide \& Deep Learning for Recommender Systems}
+
+As larger scale recommender systems began to scale beyond curated heuristics, balancing memorization (pattern recognition in training data) and generalization (inference of new and unique outputs based on input data) posed a key architectural challenge. Wide \& Deep Learning, introduced by Cheng et al. (2016) for Google Play app recommendations, is a hybrid framework that addresses this challenge by combining a linear model (the \emph{wide} component) and a deep neural network (the \emph{deep} component) into a jointly trained system.
+
+The wide component memorizes frequent co-occurrences via cross-product transformations of sparse binary features. An example includes learning that users who installed Netflix will often click on Spotify. These engineered conjunctions are effective for capturing specific, high-signal patterns, but they do not generalize well to rare or unseen combinations. To compensate, the deep component embeds high-cardinality categorical variables (app IDs, user traits) into dense vectors and passes them through multilayer perceptrons to learn more generalized representations.
+
+While the Wide \& Deep framework was designed for recommendation tasks, its modeling principles are relevant to RTB and auction optimization. Like CVR models, its deep component learns outputs from impression and user features. However, unlike pure prediction models, the wide component encodes business-specific logic directly into the model structure.
+
+Our approach shares several design motivations. We will also operate in a sparse and high-cardinality input space with skewed outcomes. Like Wide \& Deep, we use learned embeddings for generalization. However, rather than fusing the wide and deep components within one model, we preserve explicit modularity. Our neural network specializes in estimating conversion probabilities, and a separate rule-based engine handles the bidding. This design maintains flexibility, interpretability, and decoupled tuning, providing a crucial distinction for systems that must enforce constraints such as target CPA.
+
+
+
+
+
+\subsection{The Gap: Prediction vs. Policy}
 
 The central observation motivating our work is that \emph{most reinforcement learning and direct policy-learning approaches collapse prediction and bidding into a single learned function}, whereas supervised conversion prediction models are typically used only within simple heuristic bidding formulas.
 
