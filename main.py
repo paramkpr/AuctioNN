@@ -42,7 +42,7 @@ from src.exchange import ImpressionGenerator, Market, OnlinePreprocessor
 from src.campaign import bootstrap_campaigns  # Import Campaign type
 from src.decision_loop import DecisionLoop
 from src.results_logger import ResultsLogger
-from src.utils import load_model, constant_pconv_heuristic
+from src.utils import load_model, constant_pconv_heuristic, random_pconv_heuristic
 
 
 @click.group()
@@ -71,11 +71,11 @@ def help(ctx):
     help="Parquet dir containing impression features.",
 )
 @click.option(
-    "--model",
+    "--model_choice",
     "-m",
-    default="models/best_auction_network.pth",  # Adjusted default to align with train output
-    help="Path to the trained model (TorchScript .pt or state_dict .pth).",
-    type=click.Path(exists=True, dir_okay=False, readable=True, path_type=Path),
+    default="network",  # Adjusted default to align with train output
+    help="One of 'network', 'constant', or 'random'.",
+    type=click.Choice(["network", "constant", "random"], case_sensitive=False),
 )
 @click.option(
     "--preproc",
@@ -131,7 +131,17 @@ def help(ctx):
     "--seed", type=int, default=42, help="Global RNG seed for reproducibility."
 )
 def simulate(
-    data, model, preproc, out, num_imps, num_users, beta, tau, device, flush_every, seed
+    data,
+    model_choice,
+    preproc,
+    out,
+    num_imps,
+    num_users,
+    beta,
+    tau,
+    device,
+    flush_every,
+    seed,
 ):
     """
     Run the offline ad allocation simulation using a trained model.
@@ -187,14 +197,20 @@ def simulate(
         click.echo(f"Setting up results logger to: {out}")
         logger = ResultsLogger(out, flush_every=flush_every)
 
-        click.echo(f"Loading model from: {model}")
+        click.echo(f"Loading model: {model_choice}")
         cat_enc = joblib.load("./preprocessors/categorical_encoder.joblib")
         CARDINALITIES = [
             len(cat) for cat in cat_enc.categories_
         ]  # +1 → reserve row for <UNK>
 
-        model = load_model(model, torch_device, CARDINALITIES)
-        # model = constant_pconv_heuristic
+        models = {
+            "network": load_model(
+                "runs/wad/20250505_234318/epoch_4.pt", torch_device, CARDINALITIES
+            ),
+            "constant": constant_pconv_heuristic,
+            "random": random_pconv_heuristic,
+        }
+        model = models[model_choice]
 
         click.echo("Initializing decision loop...")
         loop = DecisionLoop(

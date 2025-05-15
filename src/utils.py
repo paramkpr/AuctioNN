@@ -20,13 +20,36 @@ def constant_pconv_heuristic(
     batch_size = cat_batch.shape[0]
 
     # Define the constant pConv value you want to use for the baseline
-    constant_value = 0.01  # You can adjust this value
+    constant_value = 1  # You can adjust this value
 
     # Create and return a tensor of the correct size filled with the constant value
     # Ensure the tensor is on the correct device if needed, though for constants CPU is fine.
     # DecisionLoop moves ScriptModules to the device, but not callables.
     # However, since this returns a new tensor, it shouldn't matter here.
     return torch.full((batch_size,), constant_value, dtype=torch.float32)
+
+
+def random_pconv_heuristic(
+    cat_batch: torch.Tensor, num_batch: torch.Tensor
+) -> torch.Tensor:
+    """
+    A simple heuristic predictor that returns a random pConv value for every impression.
+
+    Args:
+        cat_batch: Batch of categorical feature tensors (unused in this heuristic).
+        num_batch: Batch of numerical feature tensors (unused in this heuristic).
+
+    Returns:
+        A tensor containing a random pConv value for each item in the batch.
+    """
+    # Get the batch size from one of the input tensors (e.g., categorical)
+    batch_size = cat_batch.shape[0]
+
+    # Generate random pConv values between 0 and 1
+    random_values = torch.rand(batch_size)
+
+    # Return the tensor of random values
+    return random_values
 
 
 def load_model(

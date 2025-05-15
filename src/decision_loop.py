@@ -106,9 +106,7 @@ class DecisionLoop:
         scores = []
         for pconv_val, camp in zip(pconv_batch, carriers):
             score: float
-            # if camp.target_cpa is not None and camp.target_cpa > 0: # Avoid division by zero
-            #     score = pconv_val / camp.target_cpa
-            # else:
+            # pconv_val = camp.true_conv_rate
             score = pconv_val * camp.value_per_conv
             scores.append(score)
 
@@ -117,6 +115,7 @@ class DecisionLoop:
             return  # Or handle appropriately
 
         best_idx = int(np.argmax(scores))
+        # best_idx = np.random.randint(len(scores))
         chosen: Campaign = carriers[best_idx]
         pconv = float(pconv_batch[best_idx])
 
