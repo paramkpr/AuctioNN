@@ -97,11 +97,11 @@ Any downstream \emph{conversion event} (such can be detected clicks, purchases, 
 
 As these complexities grew, researchers began turning to \emph{reinforcement learning (RL)} to optimize bidding strategies. In this framework, bidding is modeled as a sequential decision-making problem, where the agent interacts repeatedly with an environment (the auction marketplace), and learns a policy that maximizes long-term rewards (e.g., total conversions, clicks, or revenue) while respecting budgetary or pacing constraints.
 
-One early influential approach was the \textit{Real-Time Bidding by Reinforcement Learning} (RLB) framework by Cai et al.\ (2017). Prior to the findings of this paper, approaches would utilize static optimization, with each impression treated independently. These previous methods have failed to consider the change in valuation on impressions as budgets deplete, as well as failing to anticipate how valuable an impression is in the future, after, for example, conversion data for the impressions are received. As a result, this work framed bidding as a \textit{Markov Decision Process} (MDP), where the set of observable spaces included the remaining budget, remaining time, and other campaign features. The action space was the set of possible bid prices. The RLB agent used value-based RL methods to learn the expected cumulative reward from each state-action pair and selected bids accordingly. The reward function was typically tied to immediate outcomes like clicks or conversions.
+One early influential approach was the \textit{Real-Time Bidding by Reinforcement Learning} (RLB) framework by Cai et al. \cite{cai2017real}. Prior to the findings of this paper, approaches would utilize static optimization, with each impression treated independently. These previous methods have failed to consider the change in valuation on impressions as budgets deplete, as well as failing to anticipate how valuable an impression is in the future, after, for example, conversion data for the impressions are received. As a result, this work framed bidding as a \textit{Markov Decision Process} (MDP), where the set of observable spaces included the remaining budget, remaining time, and other campaign features. The action space was the set of possible bid prices. The RLB agent used value-based RL methods to learn the expected cumulative reward from each state-action pair and selected bids accordingly. The reward function was typically tied to immediate outcomes like clicks or conversions.
 
-Following this, Wu et al.\ (2018) addressed an important limitation of the basic RLB approach: naïve reward structures can lead to poor budget pacing, with agents spending too aggressively early in a campaign or failing to adapt to delayed conversion feedback. To remedy this, Wu et al.\ introduced \emph{budget-aware state representations} and carefully designed reward functions that penalized over- or under-spending relative to pacing goals. Their approach allowed the RL agent to account for the long-term impact of current bidding decisions on campaign success, making it more robust in practice.
+Following this, Wu et al. \cite{10.1145/3514221.3526128} addressed an important limitation of the basic RLB approach: naïve reward structures can lead to poor budget pacing, with agents spending too aggressively early in a campaign or failing to adapt to delayed conversion feedback. To remedy this, Wu et al.\ introduced \emph{budget-aware state representations} and carefully designed reward functions that penalized over- or under-spending relative to pacing goals. Their approach allowed the RL agent to account for the long-term impact of current bidding decisions on campaign success, making it more robust in practice.
 
-Further advancements leveraged \emph{actor-critic methods} and \emph{policy gradient techniques}, which provided greater flexibility in handling continuous bid values and more stable learning dynamics. For example, Liu et al.\ (2021) introduced a \emph{Soft Actor-Critic (SAC)} approach to bidding, which incorporated entropy regularization to encourage exploration and avoid premature convergence to suboptimal bidding strategies. Instead of outputting a hard bid price directly, their system learned a distribution over bid adjustment factors, allowing for more nuanced bidding behavior under uncertainty.
+Further advancements leveraged \emph{actor-critic methods} and \emph{policy gradient techniques}, which provided greater flexibility in handling continuous bid values and more stable learning dynamics. For example, Liu et al.\ \cite{liu2021bidoptimizationusingmaximum} introduced a \emph{Soft Actor-Critic (SAC)} approach to bidding, which incorporated entropy regularization to encourage exploration and avoid premature convergence to suboptimal bidding strategies. Instead of outputting a hard bid price directly, their system learned a distribution over bid adjustment factors, allowing for more nuanced bidding behavior under uncertainty.
 
 In many of these RL-based systems, the \emph{neural network learns the bidding policy itself}, meaning that the network outputs the bid amount or bid adjustment as a function of the input state. Conversion probabilities may still be implicitly learned within the network, but they are not exposed directly as outputs or decision-making inputs. Instead, the network collapses prediction and decision-making into a single policy.
 
@@ -115,7 +115,7 @@ Google's \emph{Smart Bidding} strategies, as well as Facebook’s auction system
 
 \subsection{Wide \& Deep Learning for Recommender Systems}
 
-As larger scale recommender systems began to scale beyond curated heuristics, balancing memorization (pattern recognition in training data) and generalization (inference of new and unique outputs based on input data) posed a key architectural challenge. Wide \& Deep Learning, introduced by Cheng et al. (2016) for Google Play app recommendations, is a hybrid framework that addresses this challenge by combining a linear model (the \emph{wide} component) and a deep neural network (the \emph{deep} component) into a jointly trained system.
+As larger scale recommender systems began to scale beyond curated heuristics, balancing memorization (pattern recognition in training data) and generalization (inference of new and unique outputs based on input data) posed a key architectural challengecheng2016wide. Wide \& Deep Learning, introduced by Cheng et al. \cite{cheng2016wide} for Google Play app recommendations, is a hybrid framework that addresses this challenge by combining a linear model (the \emph{wide} component) and a deep neural network (the \emph{deep} component) into a jointly trained system.
 
 The wide component memorizes frequent co-occurrences via cross-product transformations of sparse binary features. An example includes learning that users who installed Netflix will often click on Spotify. These engineered conjunctions are effective for capturing specific, high-signal patterns, but they do not generalize well to rare or unseen combinations. To compensate, the deep component embeds high-cardinality categorical variables (app IDs, user traits) into dense vectors and passes them through multilayer perceptrons to learn more generalized representations.
 
@@ -127,7 +127,7 @@ Our approach shares several design motivations. We will also operate in a sparse
 
 
 
-\subsection{The Gap: Prediction vs. Policy}
+\subsection{The Gap: Prediction vs.\ Policy}
 
 The central observation motivating our work is that \emph{most reinforcement learning and direct policy-learning approaches collapse prediction and bidding into a single learned function}, whereas supervised conversion prediction models are typically used only within simple heuristic bidding formulas.
 
@@ -645,6 +645,6 @@ rigorous \emph{ablation studies} of every engineering choice—from
 eligibility gates to neural features to bid shading policies.
 
 % ----------------------------------------------------------------------
-\bibliographystyle{plain}
+\bibliographystyle{unsrt}
 \bibliography{auctionn}
 \end{document}
